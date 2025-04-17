@@ -99,7 +99,6 @@ class Test_model(VAE_Model):
     @torch.no_grad()
     def eval(self):
         val_loader = self.val_dataloader()
-        
         pred_seq_list = []
         for idx, (img, label) in enumerate(tqdm(val_loader, ncols=80)):
             img = img.to(self.args.device)

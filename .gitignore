@@ -17,6 +17,7 @@ event*
 # 忽略打包輸出的資料夾
 dist/
 build/
+*.zip
 
 # 資料集資料夾
 data/
@@ -34,3 +35,13 @@ datasets/
 .idea/
 *.swp
 .zip
+
+#
+condaenv
+*.pyc
+
+
+#忽略lab3 dataset
+LAB4/Lab4_template/result/
+DL_Lab3/Lab3_code/imga/
+*.png

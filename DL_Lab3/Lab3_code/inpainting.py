@@ -78,7 +78,7 @@ class MaskGIT:
             #demo score 
             vutils.save_image(maska, os.path.join("mask_scheduling", f"test_{i}.png"), nrow=10) 
             vutils.save_image(imga, os.path.join("imga", f"test_{i}.png"), nrow=7)
-
+            print("test_results", f"image_{i:03d}.png")  #10,3,16,16
 
 
 class MaskedImage:
@@ -137,6 +137,7 @@ if __name__ == '__main__':
     MaskGit_CONFIGS = yaml.safe_load(open(args.MaskGitConfig, 'r'))
     maskgit = MaskGIT(args, MaskGit_CONFIGS)
 
+    print("testing...")
     i=0
     for image, mask in zip(t.mi_ori, t.mask_ori):
         image=image.to(device=args.device)
@@ -146,6 +147,6 @@ if __name__ == '__main__':
         # print(mask_b.shape)       1,256
         maskgit.inpainting(image,mask_b,i)
         i+=1
-        
+
 
 
