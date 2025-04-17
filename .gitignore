@@ -42,6 +42,6 @@ condaenv
 
 
 #忽略lab3 dataset
-LAB4/Lab4_template/result/
+LAB4/Lab4_template/result/submission.csv
 DL_Lab3/Lab3_code/imga/
 *.png
