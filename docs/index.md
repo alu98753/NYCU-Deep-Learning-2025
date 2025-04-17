@@ -39,4 +39,8 @@ Lab4 Conditional VAE for Video Prediction
 
 | Initial Frame | Future Label ×629 | Predicted Result (GIF, 630 frames) |
 |---------------|-------------------|-------------------------------------|
-| ![](https://github.com/user-attachments/assets/87030ec3-d467-4ccb-bfa8-9873db7bd2ed) | ![](https://github.com/user-attachments/assets/37b3e6d4-ebe5-4e5a-a0a5-4cb5f88e5153) | <img src="LAB4/Lab4_template/result/pred_seq4.gif" width="300"/> |
+| ![](https://github.com/user-attachments/assets/87030ec3-d467-4ccb-bfa8-9873db7bd2ed) | ![](https://github.com/user-attachments/assets/37b3e6d4-ebe5-4e5a-a0a5-4cb5f88e5153) | <img src="https://github.com/user-attachments/assets/ff7696d5-b8e4-4426-af67-b047ef2a5404" width="300"/> |
+
+LAB5 DQN
+---
+===
