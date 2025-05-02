@@ -46,3 +46,8 @@ LAB4/Lab4_template/result/
 
 DL_Lab3/Lab3_code/imga/
 *.png
+
+# lab5 mp4
+
+*.mp4
+wandb*

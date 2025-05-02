@@ -1,0 +1,65 @@
+program: dqn_task3_rainbow_expert.py # <--- 請修改為你的腳本名稱
+project: DLP-Lab5-DQN-CartPole
+method: bayes
+metric:
+  name: Eval Reward     # 監控的指標 (確保你的 wandb log 中有這個 key)
+  goal: maximize        # 優化目標：最大化
+parameters:
+  learning_rate:        # 初始學習率
+    distribution: uniform
+    min: 1.0e-4
+    max: 3.0e-4
+  batch_size:           # 批次大小
+    values: [256,128 ]
+  alpha:                # PER Alpha
+    distribution: uniform
+    min: 0.4
+    max: 0.6
+  beta:                 # PER 初始 Beta
+    distribution: uniform
+    min: 0.3
+    max: 0.5
+  n_step:               # N-Step Returns
+    values: [1]
+  target_update:        # 目標網絡更新頻率 (in updates)
+    values: [1000] # 1000, 1500, 500
+  replay_start_size:    # 開始訓練所需步數
+    values: [3000, 5000]
+  lr_decay_steps:       # 學習率衰減總步數 (0 = 不衰減)
+    values: [300000, 400000, 500000] # 稍微擴大範圍
+  gradient_clip:        # 梯度裁剪值
+    values: [5.0, 10.0] # 調整範圍
+  noisy_std_init:       # NoisyNet 初始標準差
+    values: [0.4, 0.5, 0.3] # 調整範圍至更常用的值
+
+  # --- 以下為本次 Sweep 固定的參數 (根據我們的討論) ---
+  frame_stack:
+    value: 4
+  frame_skip:
+    value: 4
+  gamma:
+    value: 0.99
+  memory_size:          # Buffer 大小
+    value: 100000
+  beta_annealing_steps: # Beta 退火步數 (固定為激進值)
+    value: 400000
+  prior_eps:
+    value: 1.0e-6
+  lr_end:    # LR 衰減終點 (固定為較小值)
+    value: 1.0e-5
+  max_episode_steps:    # 單回合最大步數
+    value: 27000
+  num_expert_transitions: # 預填充的專家數據量 (固定為建議值)
+    value: 15000
+  train_frequency:      # 訓練頻率 (固定為標準值)
+    value: 4
+  gradient_steps:       # 梯度步數 (固定為標準值)
+    value: 1
+
+  # 確保你的 argparse 中有對應的參數，或者在腳本中能處理這些固定值
+
+# (可選) 提前停止策略
+# early_terminate:
+#   type: hyperband
+#   min_iter: 50 # 至少跑 50 個 epoch/step/etc. (需要根據你的 log 調整)
+#   # s: 2 # 可選的 bracket 數量

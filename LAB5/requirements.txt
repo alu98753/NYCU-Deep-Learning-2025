@@ -1,0 +1,9 @@
+torch>=1.10
+numpy
+gymnasium==1.1.1
+ale-py>=0.10.0
+opencv-python
+wandb
+imageio
+argparse
+

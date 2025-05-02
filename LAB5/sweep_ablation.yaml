@@ -1,0 +1,58 @@
+# sweep-config.yaml
+
+# 1. 要執行的程式名稱
+program: dqn_task3_rainbow.py  # <--- *** 請將這裡改成你實際的 Python 腳本檔名 ***
+project: DLP-Lab5-Rainbow-abalation 
+name: "${batch_size}_${discount_factor}_${lr}_${replay-start-size}_${target-update-frequency}_${n-step}"          
+
+# 2. 搜索策略 (grid 會測試所有組合)
+method: grid
+
+# 3. 優化目標 (根據你 wandb.log 的名稱設定)
+metric:
+  name: Reward/Evaluation Reward  # <--- 確認這個是你想要比較的指標名稱
+  goal: maximize                # 目標是最大化評估獎勵
+
+# 4. 要搜索的參數
+parameters:
+
+  # --- 主要要測試的 Rainbow 元件開關 ---
+  use-dueling:
+    value:     False     # 測試 開啟/關閉 Dueling
+  use-noisy:
+    values:    [True,False]   # 測試 開啟/關閉 Noisy Nets (會自動取代 Epsilon-Greedy)
+  use-distributional:
+    values:    [True,False]   # 測試 開啟/關閉 Distributional RL (C51)
+
+  # --- 保持固定的其他重要參數 (建議列出以供追蹤) ---
+  # (請根據你的 argparse 預設值或最佳設定調整下面的 value)
+  env-name:
+    value: "ALE/Pong-v5"
+  seed:
+    value: 777                  # 固定種子以比較元件效果 (之後可考慮跑多種子)
+  lr:
+    value: 1e-4
+  batch-size:
+    value: 32
+  memory-size:
+    value: 100000               # 使用優化後的 buffer 大小
+  replay-start-size:
+    value: 50000               # 訓練開始前的 buffer 最小大小
+  n-step:
+    value: 3
+  discount-factor:
+    value: 0.99
+  target-update-frequency:
+    value: 8000
+  alpha:
+    value: 0.5                  # PER alpha
+  beta:
+    value: 0.4                  # PER initial beta
+  total-train-steps:            # 用於 PER beta 退火
+    value: 1000000
+  episodes:                     # 每個組合跑的總 episodes 數
+    value: 270                 # <--- 如果想快速看效果，可以減少此數值
+  frame-stack:
+    value: 4
+
+max-parallel-jobs: 1

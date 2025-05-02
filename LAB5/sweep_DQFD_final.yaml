@@ -1,0 +1,60 @@
+# sweep_DQFD_v2.yaml
+program: task3_pretrain_extract_rainbow_DQFD.py
+method: bayes # Or bayes
+metric:
+  name: Evaluation/Raw Reward # Primary metric
+  goal: maximize
+# Optional: Define step for primary metric if needed, though wandb usually infers
+parameters:
+  # --- Fixed Parameters --
+  env-name: {value: "ALE/Pong-v5"}
+  frame-stack: {value: 4}
+  frame-skip: {value: 4}
+  max-episode-steps: {value: 3500} # may be adjust 
+  discount-factor: {value: 0.99}
+  batch-size: {value: 32}
+  grad-clip: {value: 10.0}
+  num-atoms: {value: 51}
+  vmin: {value: -4.0} # may be adjust 
+  vmax: {value: 4.0} 
+  epsilon-start: {value: 1.0}
+  epsilon-min: {value: 0.02}
+  memory-size: {value: 100000}
+  per-alpha: {value: 0.5}
+  per-beta0: {value: 0.4}
+  per-beta-steps: {value: 1000000  }
+  n-step: {value: 3}
+  # --- DQFD Fixed ---
+  load-expert-data: {value: "expert_pong_score21plus.npz"}
+  lambda2: {value: 1e-5}
+  per-epsilon: {value: 1e-6}
+  expert-epsilon: 
+    values: [1.5, 5 ] # may be adjust 
+  # --- Early Stopping Fixed ---
+  val-split-ratio: {value: 0.1}
+  validate-every: {value: 1000}
+  min-delta: {value: 1e-5}
+  accuracy-threshold: {value: 0.70} #  may be adjust  80 or 90 shloud check
+
+  # --- Parameters to Sweep ---
+  lr: # Main RL LR
+    distribution: log_uniform_values
+    min: 3.0e-5
+    max: 5.0e-5
+  pretrain-lr: 
+    distribution: log_uniform_values
+    min: 0.000005
+    max: 0.00001
+  lambda1: # Expert loss weight
+    values: [0.2]  # 0.1 or 0.2
+  margin: # Expert loss margin
+    value: 0.8
+  epsilon-decay-steps: # Exploration decay speed (decision steps)
+    distribution: categorical
+    values: [75000] # may be adjust   150k may be large
+  replay-start-size: # RL training start (decision steps)
+    values: [5000]
+  patience: # Early stopping patience (after acc >= 80%)
+    value: 5
+  target-update-frequency: 
+    values: [2000] # ,4000,6000 Fixed based on previous discussion
