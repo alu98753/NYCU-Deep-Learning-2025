@@ -6,11 +6,11 @@
 
 import gc
 import torch
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
+
 
 # 確保沒有人持有 tensor
-gc.collect()
-torch.cuda.empty_cache()
+
 torch.cuda.ipc_collect()
 import torch.nn as nn
 import torch.nn.functional as F
@@ -39,8 +39,10 @@ from pathlib import Path
 from file.evaluator import evaluation_model
 torch.cuda.empty_cache()
 torch.cuda.ipc_collect()
-import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" 
+
+
+
+
 # ---------------------
 # Argument Parser (Keep as before)
 # ---------------------
@@ -57,7 +59,8 @@ def parse_args():
     # --- Dataset & Loader ---
     parser.add_argument("--image_size", type=int, default=64, help="Image resolution")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for training")
-    parser.add_argument("--num_workers", type=int, default=20, help="Number of workers for DataLoader")
+    parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for DataLoader")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps") # Keep for manual implementation
 
     # --- Model Config (UNet) ---
     parser.add_argument("--unet_channels", type=int, default=3, help="Number of input image channels")
@@ -79,7 +82,6 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=3e-5, help="Learning rate")
     parser.add_argument("--lr_scheduler_type", type=str, default="linear", help="Learning rate scheduler type")
     parser.add_argument("--lr_warmup_steps", type=int, default=500, help="Number of warmup steps for LR scheduler")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps") # Keep for manual implementation
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="AdamW beta1")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="AdamW beta2")
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="AdamW weight decay")
@@ -88,7 +90,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # --- Evaluation & Sampling ---
-    parser.add_argument("--eval_batch_size", type=int, default=64, help="Batch size for evaluation/sampling")
+    parser.add_argument("--eval_batch_size", type=int, default=32, help="Batch size for evaluation/sampling")
     parser.add_argument("--eval_epochs", type=int, default=3, help="Frequency (in epochs) to run evaluation") # Changed name for clarity
     parser.add_argument("--save_model_threshold", type=float, default=0.8, help="Mean accuracy threshold to save model")
     parser.add_argument("--save_image_threshold", type=float, default=0.8, help="Individual accuracy threshold to save images per test set")
@@ -198,14 +200,6 @@ class ConditionEmbedder(nn.Module):
 # Evaluation Function 
 # ---------------------
 def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labels_dict, device, args, epoch, global_step):
-    """
-    Evaluates the model, saves images conditionally, logs results,
-    and logs a comparison table to WandB.
-
-    Returns:
-        dict: Dictionary containing accuracies {'test_accuracy': acc, 'new_test_accuracy': acc, 'mean_accuracy': mean_acc}
-              Returns {'mean_accuracy': 0.0} if evaluation cannot be performed.
-    """
     if evaluator is None:
         print("Evaluator not loaded, skipping evaluation.")
         return {'mean_accuracy': 0.0}
@@ -218,25 +212,19 @@ def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labe
 
     results = {}
     accuracies = []
-    all_generated_images_denorm = {}
-    wandb_logs = {} # Initialize wandb log dict here
-
+    wandb_logs = {}
     img_denorm = T.Normalize([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0])
 
     for test_set_name, labels_list in test_labels_dict.items():
         print(f"Evaluating on {test_set_name}...")
         num_samples = len(labels_list)
-        generated_images_norm_list = []
-        generated_images_denorm_list = []
-        gt_labels_one_hot_list = []
-        table_data = [] # <<< CHANGE: List to store data for the WandB Table
+        batch_accuracies = []
+        generated_images_for_grid = []
+        table_data = []
 
-        # --- Store original labels strings for the table ---
         original_label_strings_list = list(labels_list.values()) if isinstance(labels_list, dict) else labels_list
 
-
         for i in tqdm(range(0, num_samples, args.eval_batch_size), desc=f"Sampling {test_set_name}"):
-            # Get label strings for the current batch corresponding to the original order
             batch_labels_str_original_order = original_label_strings_list[i : i + args.eval_batch_size]
             current_batch_size = len(batch_labels_str_original_order)
 
@@ -250,106 +238,79 @@ def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labe
                         batch_gt_one_hot[j, args.object_map[obj_name]] = 1.0
 
             with torch.no_grad():
-                condition_embeddings = condition_embedder(batch_label_vectors).unsqueeze(1)
+                with autocast(device_type='cuda'): 
+                    condition_embeddings = condition_embedder(batch_label_vectors).unsqueeze(1)
 
-                # --- Sampling Loop ---
-                gen = torch.Generator(device=device).manual_seed(args.seed + i + epoch) # Add epoch to seed
-                images = torch.randn(
-                    (current_batch_size, args.unet_channels, args.image_size, args.image_size),
-                    generator=gen, device=device,
-                )
-                scheduler.set_timesteps(args.num_train_timesteps)
-                for t in scheduler.timesteps:
-                    model_input = scheduler.scale_model_input(images, t)
-                    # --- CFG Sampling (Example - requires CFG implementation in training too!) ---
-                    # Uncomment and adapt if you implement CFG
-                    # guidance_scale = args.guidance_scale
-                    # null_label_vector = torch.zeros_like(batch_label_vectors)
-                    # null_condition_embeddings = condition_embedder(null_label_vector).unsqueeze(1)
-                    # combined_embeddings = torch.cat([null_condition_embeddings, condition_embeddings])
-                    # latent_model_input = torch.cat([images] * 2)
-                    # latent_model_input = scheduler.scale_model_input(latent_model_input, t)
-                    # noise_pred_combined = pipeline.unet(sample=latent_model_input, timestep=t, encoder_hidden_states=combined_embeddings).sample
-                    # noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2)
-                    # noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-                    # --- Standard Conditional Sampling ---
-                    noise_pred = pipeline.unet(
-                        sample=model_input, timestep=t, encoder_hidden_states=condition_embeddings
-                    ).sample
-                    # --- End Sampling Choice ---
-                    images = scheduler.step(noise_pred, t, images).prev_sample
-                # --- End Sampling Loop ---
+                    gen = torch.Generator(device=device).manual_seed(args.seed + i + epoch)
+                    images = torch.randn(
+                        (current_batch_size, args.unet_channels, args.image_size, args.image_size),
+                        generator=gen, device=device,
+                    )
+                    scheduler.set_timesteps(args.num_train_timesteps)
+                    for t in scheduler.timesteps:
+                        model_input = scheduler.scale_model_input(images, t)
+                        noise_pred = pipeline.unet(
+                            sample=model_input,
+                            timestep=t,
+                            encoder_hidden_states=condition_embeddings
+                        ).sample
+                        images = scheduler.step(noise_pred, t, images).prev_sample
 
-                images_cpu = images.detach().cpu()
-                generated_images_norm_list.extend(images_cpu)
-                images_denorm_batch = torch.stack([img_denorm(img) for img in images_cpu])
-                generated_images_denorm_list.extend(images_denorm_batch)
+                    images_cpu = images.detach().cpu()
+                    gt_cpu = batch_gt_one_hot.detach().cpu()
 
-                # <<< CHANGE: Populate data for the comparison table >>>
-                for k in range(current_batch_size):
-                    original_index = i + k
-                    target_labels_str = ", ".join(batch_labels_str_original_order[k])
-                    # Use the corresponding denormalized image tensor
-                    generated_image_tensor = images_denorm_batch[k]
-                    # Store data for wandb.Table: index, target labels, generated image
-                    table_data.append([
-                        original_index,
-                        target_labels_str,
-                        wandb.Image(generated_image_tensor) # Log image directly
-                    ])
-                # <<< End CHANGE >>>
+                    batch_acc = evaluator.eval(
+                        images_cpu.to(evaluator.device),
+                        gt_cpu.to(evaluator.device)
+                    )
+                    batch_accuracies.append(batch_acc)
 
-            gt_labels_one_hot_list.append(batch_gt_one_hot.detach().cpu())
 
-        # --- Evaluation ---
-        all_gen_norm = torch.stack(generated_images_norm_list)
-        all_gt_one_hot = torch.cat(gt_labels_one_hot_list, dim=0)
-        accuracy = 0.0
-        if all_gen_norm.shape[0] == all_gt_one_hot.shape[0] and all_gen_norm.shape[0] > 0:
-            with torch.no_grad():
-                accuracy = evaluator.eval(all_gen_norm.to(device), all_gt_one_hot.to(device))
-            print(f"{test_set_name} Accuracy: {accuracy:.4f}")
-        else:
-            print(f"Warning: Mismatch or zero samples for {test_set_name}. Cannot evaluate.")
 
+                    images_denorm = [img_denorm(img) for img in images_cpu]
+                    generated_images_for_grid.extend(images_denorm)
+                    for k in range(current_batch_size):
+                        table_data.append([
+                            i + k,
+                            ", ".join(batch_labels_str_original_order[k]),
+                            wandb.Image(images_denorm[k])
+                        ])
+
+
+            del images, images_cpu, gt_cpu
+            if 'images_denorm' in locals():
+                del images_denorm
+            torch.cuda.empty_cache()
+
+        accuracy = np.mean(batch_accuracies) if batch_accuracies else 0.0
         results[f"{test_set_name}_accuracy"] = accuracy
         accuracies.append(accuracy)
-        all_generated_images_denorm[test_set_name] = torch.stack(generated_images_denorm_list)
+        print(f"{test_set_name} Accuracy: {accuracy:.4f}")
 
-        # --- Conditional Image Saving ---
+
         if accuracy > args.save_image_threshold:
-            print(f"Accuracy ({accuracy:.4f}) > Threshold ({args.save_image_threshold}). Saving images for {test_set_name}, Epoch {epoch}...")
-            save_dir = Path(args.output_dir) / "images" / f"epoch_{epoch}" / test_set_name
-            save_dir.mkdir(parents=True, exist_ok=True)
-            # Use the already prepared denormalized list
-            for idx, img_tensor in enumerate(generated_images_denorm_list):
-                save_image(img_tensor, save_dir / f"{idx}.png")
-        # else: print(...) # Optional: print skip message
-
-        # <<< CHANGE: Log Comparison Table >>>
-        if table_data:
-            print(f"Logging comparison table for {test_set_name}...")
-            comparison_table = wandb.Table(columns=["Index", "Target Labels", "Generated Image"], data=table_data)
-            wandb_logs[f"Comparison Table/{test_set_name}_Epoch{epoch}"] = comparison_table
-        # <<< End CHANGE >>>
-
-
-    # --- Calculate Mean Accuracy ---
-    mean_accuracy = np.mean(accuracies) if accuracies else 0.0
-    results["mean_accuracy"] = mean_accuracy
-    print(f"Epoch {epoch} Mean Accuracy: {mean_accuracy:.4f}")
-    
-    if mean_accuracy > 0.8:
-        # --- Generate and Log Grids ---
-        for test_set_name, images_tensor in all_generated_images_denorm.items():
-            if images_tensor is not None and len(images_tensor) > 0:
-                grid_tensor = make_grid(images_tensor[:32], nrow=8, padding=2, normalize=False)
+            if generated_images_for_grid:
+                grid_tensor = make_grid(generated_images_for_grid, nrow=8, padding=2, normalize=False)
                 wandb_logs[f"Generated Images/{test_set_name}_Grid_Epoch{epoch}"] = wandb.Image(grid_tensor)
                 grid_save_path = Path(args.output_dir) / f"{test_set_name}_grid_epoch{epoch}.png"
                 save_image(grid_tensor, grid_save_path)
 
-        # --- Generate Denoising Process Grid ---
-        # (Denoising logic remains the same)
+            print(f"Accuracy ({accuracy:.4f}) > Threshold ({args.save_image_threshold}). Saving images...")
+            save_dir = Path(args.output_dir) / "images" / f"epoch_{epoch}" / test_set_name
+            save_dir.mkdir(parents=True, exist_ok=True)
+            for idx, img_tensor in enumerate(generated_images_for_grid):
+                save_image(img_tensor, save_dir / f"{idx}.png")
+
+        if table_data:
+            comparison_table = wandb.Table(columns=["Index", "Target Labels", "Generated Image"], data=table_data)
+            wandb_logs[f"Comparison Table/{test_set_name}_Epoch{epoch}"] = comparison_table
+
+    mean_accuracy = np.mean(accuracies) if accuracies else 0.0
+    results["mean_accuracy"] = mean_accuracy
+    print(f"Epoch {epoch} Mean Accuracy: {mean_accuracy:.4f}")
+
+    # Denoising visualization (保留不變)
+    if mean_accuracy > args.save_model_threshold:
         denoise_labels_str = ["red sphere", "cyan cylinder", "cyan cube"]
         denoise_label_vector = torch.zeros(1, args.num_classes, device=device, dtype=torch.float32)
         for obj_name in denoise_labels_str:
@@ -366,7 +327,6 @@ def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labe
             denoise_imgs.append(img_denorm(image[0].cpu()))
             for i, t in enumerate(tqdm(scheduler.timesteps, desc="Denoising Viz", leave=False)):
                 model_input = scheduler.scale_model_input(image, t)
-                # Adapt this if using CFG
                 noise_pred = pipeline.unet(model_input, t, encoder_hidden_states=cond_embed).sample
                 image = scheduler.step(noise_pred, t, image).prev_sample
                 if i % (args.num_train_timesteps // 10) == 0 or i == args.num_train_timesteps - 1:
@@ -378,17 +338,21 @@ def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labe
             denoise_save_path = Path(args.output_dir) / f"denoising_process_epoch{epoch}.png"
             save_image(denoise_grid, denoise_save_path)
 
-    # Log combined metrics, grids, and tables
     wandb.log({**results, **wandb_logs}, step=global_step)
 
     pipeline.unet.train()
     condition_embedder.train()
     print(f"--- Finished Evaluation Epoch {epoch} ---")
     return results
+
 # ---------------------
 # Main Training Script (MODIFIED - No Accelerator)
 # ---------------------
 def main():
+    os.environ["OMP_NUM_THREADS"] = "4"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" 
+    torch.set_num_threads(4)
+    
     args = parse_args()
     set_seed(args.seed)
     eval_epochs =  args.eval_epochs 
@@ -471,7 +435,7 @@ def main():
          print(f"Warning: new_test.json not found at {new_test_json_path}")
 
 
-    block_out_channels = (128, 256, 512) # 每層輸出的通道數 (層數需與 block_types 對應)
+    block_out_channels = (64, 128, 256)  # 或 (64, 64, 128) 測試看看效果# 每層輸出的通道數 (層數需與 block_types 對應)
 
     # 決定每一層要用哪種類型的區塊
     # "DownBlock2D": 基本的 ResNet 下採樣區塊
@@ -504,7 +468,7 @@ def main():
         up_block_types=up_block_types,         # <--- 指定上採樣區塊類型
         mid_block_type="UNetMidBlock2DCrossAttn", # 指定中間區塊類型 (通常包含 Attention)
         cross_attention_dim=unet_cross_attn_dim, # <--- 修正維度，匹配 ConditionEmbedder
-        layers_per_block=2,                   # 每個 ResNet 區塊包含的層數 (預設通常是 2)
+        layers_per_block=1,                   # 每個 ResNet 區塊包含的層數 (預設通常是 2)
         # attention_head_dim=8,               # (可選) 指定 Attention Head 的維度
     ).to(device) # 移動模型到設備
 
@@ -561,8 +525,8 @@ def main():
     # Pass the models directly, they are already on the device
     pipeline = DDPMPipeline(unet=unet, scheduler=noise_scheduler)
 
-    scaler = GradScaler()
-
+    scaler = GradScaler(device_type='cuda')  # 明確指定 device
+        
     for epoch in range(args.num_epochs):
         unet.train()
         condition_embedder.train()
@@ -586,30 +550,32 @@ def main():
 
             # Get condition embeddings
             condition_embeddings = condition_embedder(label_vectors).unsqueeze(1)
+            
+            with autocast(device_type='cuda'):
+                # Predict noise
+                model_pred = unet(
+                    sample=noisy_images,
+                    timestep=timesteps,
+                    encoder_hidden_states=condition_embeddings
+                ).sample
 
-            # Predict noise
-            model_pred = unet(
-                sample=noisy_images,
-                timestep=timesteps,
-                encoder_hidden_states=condition_embeddings
-            ).sample
-
-            # Calculate loss
-            loss = F.mse_loss(model_pred.float(), noise.float())
+                # Calculate loss
+                loss = F.mse_loss(model_pred.float(), noise.float())
 
             # --- Manual Gradient Accumulation ---
             loss = loss / args.gradient_accumulation_steps # Scale loss
-            loss.backward() # Accumulate gradients
+            scaler.scale(loss).backward()
 
             if (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == len(train_dataloader):
-                # Clip gradients (optional but recommended)
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
                      list(unet.parameters()) + list(condition_embedder.parameters()),
                      args.max_grad_norm
                  )
 
                 # Optimizer Step
-                optimizer.step()
+                scaler.step(optimizer) 
+                scaler.update()
                 lr_scheduler.step()
                 optimizer.zero_grad() # Zero gradients after optimization step
 
@@ -662,7 +628,9 @@ def main():
                 print(f"Model saved to {save_path}")
             else:
                 print(f"Mean Accuracy ({mean_accuracy:.4f}) <= Threshold ({args.save_model_threshold}). Skipping model saving for Epoch {epoch + 1}.")
-
+            
+            gc.collect()
+            torch.cuda.empty_cache()
 
     print("Training Finished!")
     wandb.finish()
