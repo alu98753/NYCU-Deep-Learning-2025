@@ -2,11 +2,15 @@
 # Lab6: Lab6 - Generative Models / DDPM
 # Instructor: Ping-Chun Hsieh、Wei Hung and Alison Wen
 
-# Contributors: Huang Tzu Cheng
+# Contributors: [Your Name Here, e.g., Huang Tzu Cheng]
 
 import gc
 import torch
-from torch.amp import autocast, GradScaler
+
+# 確保沒有人持有 tensor
+gc.collect()
+torch.cuda.empty_cache()
+torch.cuda.ipc_collect()
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -21,38 +25,51 @@ from tqdm.auto import tqdm
 import argparse
 import time
 
-# --- Custom Modules ---
 import wandb
 from diffusers import UNet2DConditionModel, DDPMScheduler, DDPMPipeline
 from diffusers.optimization import get_scheduler
 import torchvision.transforms as T
 from torchvision.utils import make_grid, save_image
-from pathlib import Path
-from file.evaluator import evaluation_model
-torch.cuda.ipc_collect()
 
+# --- Custom Modules ---
+import sys
+from pathlib import Path
+
+from file.evaluator import evaluation_model
+torch.cuda.empty_cache()
+torch.cuda.ipc_collect()
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" 
+
+from torch.amp import autocast, GradScaler
+
+
+# ---------------------
+# Argument Parser (Keep as before)
+# ---------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="DDPM Training for iCLEVR Image Generation",
-                                    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # --- Paths ---
     parser.add_argument("--data_dir", type=str, default="file", help="Directory containing dataset files (iclevr.zip, *.json)")
     parser.add_argument("--image_dir", type=str, default="data/iclevr", help="Directory containing extracted images")
     parser.add_argument("--output_dir", type=str, default="res", help="Directory to save generated images and models")
     
+
     # --- Dataset & Loader ---
     parser.add_argument("--image_size", type=int, default=64, help="Image resolution")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training")
-    parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for DataLoader")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument("--num_workers", type=int, default=20, help="Number of workers for DataLoader")
 
-    # --- Model(UNet) ---
+    # --- Model Config (UNet) ---
     parser.add_argument("--unet_channels", type=int, default=3, help="Number of input image channels")
     parser.add_argument("--unet_out_channels", type=int, default=3, help="Number of output image channels")
     parser.add_argument("--unet_block_out_channels", type=tuple, default=(128, 256, 512), help="UNet block output channels")
+# Example - adding attention earlier
     parser.add_argument("--unet_cross_attn_dim", type=int, default=128, help="Cross attention dimension (should match condition embedding dim)")
 
-    # --- Diffusion  ---
+    # --- Diffusion Config ---
     parser.add_argument("--num_train_timesteps", type=int, default=1500, help="Number of diffusion timesteps")
     parser.add_argument("--beta_schedule", type=str, default="linear", choices=["linear", "cosine"], help="Beta schedule type")
 
@@ -65,6 +82,7 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=3e-5, help="Learning rate")
     parser.add_argument("--lr_scheduler_type", type=str, default="linear", help="Learning rate scheduler type")
     parser.add_argument("--lr_warmup_steps", type=int, default=500, help="Number of warmup steps for LR scheduler")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps") # Keep for manual implementation
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="AdamW beta1")
     parser.add_argument("--adam_beta2", type=float, default=0.999, help="AdamW beta2")
     parser.add_argument("--adam_weight_decay", type=float, default=1e-2, help="AdamW weight decay")
@@ -73,19 +91,22 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # --- Evaluation & Sampling ---
-    parser.add_argument("--eval_batch_size", type=int, default=64, help="Batch size for evaluation/sampling")
-    parser.add_argument("--eval_epochs", type=int, default=1, help="Frequency (in epochs) to run evaluation") 
-    parser.add_argument("--save_model_threshold", type=float, default=0, help="Mean accuracy threshold to save model")
-    parser.add_argument("--save_image_threshold", type=float, default=0, help="Individual accuracy threshold to save images per test set")
+    parser.add_argument("--eval_batch_size", type=int, default=32, help="Batch size for evaluation/sampling")
+    parser.add_argument("--eval_epochs", type=int, default=10, help="Frequency (in epochs) to run evaluation") # Changed name for clarity
+    parser.add_argument("--save_model_threshold", type=float, default=0.8, help="Mean accuracy threshold to save model")
+    parser.add_argument("--save_image_threshold", type=float, default=0.8, help="Individual accuracy threshold to save images per test set")
 
     # --- WandB ---
     parser.add_argument("--wandb_project", type=str, default="DLP-Lab6-DDPM", help="WandB project name")
-    parser.add_argument("--wandb_run_name", type=str, default=f"ddpm_light_{time.strftime('%Y%m%d_%H%M%S')}", help="WandB run name")
+    parser.add_argument("--wandb_run_name", type=str, default=f"ddpm_iclevr_{time.strftime('%Y%m%d_%H%M%S')}", help="WandB run name")
     parser.add_argument("--log_images_steps", type=int, default=500, help="Frequency (in steps) to log sample images to WandB during training")
+
     args = parser.parse_args()
-    
     return args
 
+# ---------------------
+# Reproducibility (Keep as before)
+# ---------------------
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -93,9 +114,14 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        # Keep deterministic options if you want strict reproducibility,
+        # but they might slightly slow down training.
+        # torch.backends.cudnn.deterministic = True
+        # torch.backends.cudnn.benchmark = False
 
+# ---------------------
+# Dataset (Keep as before)
+# ---------------------
 class iCLEVRDataset(Dataset):
     def __init__(self, image_dir, json_path, object_map, transform=None):
         self.image_dir = Path(image_dir)
@@ -132,7 +158,16 @@ class iCLEVRDataset(Dataset):
 
     def __getitem__(self, idx):
         img_name = self.image_dir / self.image_files[idx]
-        image = Image.open(img_name).convert('RGB')
+        # Should not error now if pre-filtered, but keep try-except just in case
+        try:
+            image = Image.open(img_name).convert('RGB')
+        except FileNotFoundError:
+             print(f"Error: Image file not found {img_name} despite filtering.")
+             # Return a dummy sample or raise error
+             dummy_image = torch.zeros((3, args.image_size, args.image_size))
+             dummy_label = torch.zeros(self.num_classes, dtype=torch.float32)
+             return dummy_image, dummy_label # Or raise error
+
         labels = self.labels[idx]
         label_vector = torch.zeros(self.num_classes, dtype=torch.float32)
         for obj_name in labels:
@@ -146,6 +181,9 @@ class iCLEVRDataset(Dataset):
 
         return image, label_vector
 
+# ---------------------
+# Conditioning Module (Keep as before)
+# ---------------------
 class ConditionEmbedder(nn.Module):
     def __init__(self, num_classes, embed_dim, hidden_dim=256):
         super().__init__()
@@ -154,12 +192,14 @@ class ConditionEmbedder(nn.Module):
             nn.SiLU(), # Or ReLU, GELU
             nn.Linear(hidden_dim, embed_dim)
         )
-        
+
     def forward(self, class_labels):
         embeddings = self.mlp(class_labels)
         return embeddings
 
-
+# ---------------------
+# Evaluation Function 
+# ---------------------
 def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labels_dict, device, args, epoch, global_step):
     if evaluator is None:
         print("Evaluator not loaded, skipping evaluation.")
@@ -270,7 +310,7 @@ def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labe
     results["mean_accuracy"] = mean_accuracy
     print(f"Epoch {epoch} Mean Accuracy: {mean_accuracy:.4f}")
 
-    # Denoising visualization 
+    # Denoising visualization (保留不變)
     if mean_accuracy > args.save_model_threshold:
         denoise_labels_str = ["red sphere", "cyan cylinder", "cyan cube"]
         denoise_label_vector = torch.zeros(1, args.num_classes, device=device, dtype=torch.float32)
@@ -306,25 +346,33 @@ def evaluate_model(evaluator, pipeline, scheduler, condition_embedder, test_labe
     print(f"--- Finished Evaluation Epoch {epoch} ---")
     return results
 
+
+# ---------------------
+# Main Training Script (MODIFIED - No Accelerator)
+# ---------------------
 def main():
-    os.environ["OMP_NUM_THREADS"] = "4"
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" 
-    torch.set_num_threads(4)
-    
+    scaler = GradScaler()
+
     args = parse_args()
     set_seed(args.seed)
     eval_epochs =  args.eval_epochs 
+    # --- Device Setup ---
     if torch.cuda.is_available():
         device = torch.device("cuda")
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
     else:
         device = torch.device("cpu")
+        print("Using CPU")
 
-    #  Output Dirs 
+    # --- Create Output Dirs ---
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Image saving path now includes epoch, handled in evaluate_model
 
-    #  Load Object Map 
+    # --- Load Object Map ---
     object_json_path = Path(args.data_dir) / "objects.json"
+    if not object_json_path.exists():
+        raise FileNotFoundError(f"objects.json not found at {object_json_path}")
     with open(object_json_path, 'r') as f:
         args.object_map = json.load(f)
     args.object_map_inv = {v: k for k, v in args.object_map.items()}
@@ -349,9 +397,9 @@ def main():
                  zip_ref.extractall(Path(args.data_dir))
              print(f"Extraction complete. Expecting images in {args.image_dir}.")
              if not image_dir_path.exists() or not any(image_dir_path.iterdir()):
-                raise FileNotFoundError(f"Image directory {args.image_dir} still empty after extraction attempt.")
+                 raise FileNotFoundError(f"Image directory {args.image_dir} still empty after extraction attempt.")
          else:
-            raise FileNotFoundError(f"Image directory {args.image_dir} not found or empty, and iclevr.zip not found at {zip_path}.")
+             raise FileNotFoundError(f"Image directory {args.image_dir} not found or empty, and iclevr.zip not found at {zip_path}.")
 
 
     train_json_path = Path(args.data_dir) / "train.json"
@@ -359,52 +407,70 @@ def main():
         raise FileNotFoundError(f"train.json not found at {train_json_path}")
 
     train_dataset = iCLEVRDataset(image_dir=args.image_dir,
-                                json_path=train_json_path,
-                                object_map=args.object_map,
-                                transform=train_transform)
+                                  json_path=train_json_path,
+                                  object_map=args.object_map,
+                                  transform=train_transform)
     train_dataloader = DataLoader(train_dataset,
-                                batch_size=args.batch_size,
-                                shuffle=True,
-                                num_workers=args.num_workers,
-                                pin_memory=True if device == torch.device("cuda") else False) # Pin memory only for CUDA
+                                  batch_size=args.batch_size,
+                                  shuffle=True,
+                                  num_workers=args.num_workers,
+                                  pin_memory=True if device == torch.device("cuda") else False) # Pin memory only for CUDA
 
     # --- Load Test Labels ---
     test_labels_dict = {}
     test_json_path = Path(args.data_dir) / "test.json"
     new_test_json_path = Path(args.data_dir) / "new_test.json"
     if test_json_path.exists():
-        with open(test_json_path, 'r') as f:
-            test_data_raw = json.load(f)
-            test_labels_dict["test"] = test_data_raw
+         with open(test_json_path, 'r') as f:
+             test_data_raw = json.load(f)
+             test_labels_dict["test"] = test_data_raw
     else:
         print(f"Warning: test.json not found at {test_json_path}")
 
     if new_test_json_path.exists():
-        with open(new_test_json_path, 'r') as f:
-            new_test_data_raw = json.load(f)
-            test_labels_dict["new_test"] = new_test_data_raw
+         with open(new_test_json_path, 'r') as f:
+             new_test_data_raw = json.load(f)
+             test_labels_dict["new_test"] = new_test_data_raw
     else:
-        print(f"Warning: new_test.json not found at {new_test_json_path}")
+         print(f"Warning: new_test.json not found at {new_test_json_path}")
 
 
-    block_out_channels = (64, 128, 256)  # 或 (64, 64, 128) 測試看看效果 # 每層輸出的通道數 (層數與 block_types 對應)
-    down_block_types = ("DownBlock2D","CrossAttnDownBlock2D","CrossAttnDownBlock2D")
-    up_block_types = ("CrossAttnUpBlock2D","CrossAttnUpBlock2D","UpBlock2D")
+    block_out_channels = (128, 256, 512) # 每層輸出的通道數 (層數需與 block_types 對應)
+
+    # 決定每一層要用哪種類型的區塊
+    # "DownBlock2D": 基本的 ResNet 下採樣區塊
+    # "CrossAttnDownBlock2D": 包含 ResNet 和 Cross-Attention 的下採樣區塊
+    # "UpBlock2D": 基本的 ResNet 上採樣區塊
+    # "CrossAttnUpBlock2D": 包含 ResNet 和 Cross-Attention 的上採樣區塊
+    # "UNetMidBlock2DCrossAttn": 中間層，通常包含 ResNet, Self-Attention, Cross-Attention
+
+    down_block_types = (
+        "DownBlock2D",             # 第一層：基本下採樣 + ResNet
+        "CrossAttnDownBlock2D",    # 第二層：加入 Cross-Attention (接收條件)
+        "CrossAttnDownBlock2D",    # 第三層：繼續使用 Cross-Attention
+    )
+
+    up_block_types = (
+        "CrossAttnUpBlock2D",      # 對應第三層下採樣：使用 Cross-Attention
+        "CrossAttnUpBlock2D",      # 對應第二層下採樣：使用 Cross-Attention
+        "UpBlock2D",               # 對應第一層下採樣：基本 ResNet 上採樣
+    )
 
     # 確保 cross_attention_dim 與 ConditionEmbedder 的輸出維度一致
-    unet_cross_attn_dim = args.cond_embed_dim # 128
+    unet_cross_attn_dim = args.cond_embed_dim # 應該是 128
 
     unet = UNet2DConditionModel(
-        sample_size=args.image_size,         # 64
-        in_channels=args.unet_channels,      # in_channels 3 for RGB)
-        out_channels=args.unet_out_channels, 
-        block_out_channels=block_out_channels, # 指定每層通道數
-        down_block_types=down_block_types,     
-        up_block_types=up_block_types,         
-        mid_block_type="UNetMidBlock2DCrossAttn", # 中間block type
-        cross_attention_dim=unet_cross_attn_dim, 
-        layers_per_block=1,                   # 每個 ResNet包含的層數(預設 2)
-    ).to(device) 
+        sample_size=args.image_size,         # 圖像尺寸 (e.g., 64)
+        in_channels=args.unet_channels,      # 輸入通道數 (e.g., 3 for RGB)
+        out_channels=args.unet_out_channels, # 輸出通道數 (e.g., 3 for predicted noise)
+        block_out_channels=block_out_channels, # <--- 指定每層通道數
+        down_block_types=down_block_types,     # <--- 指定下採樣區塊類型
+        up_block_types=up_block_types,         # <--- 指定上採樣區塊類型
+        mid_block_type="UNetMidBlock2DCrossAttn", # 指定中間區塊類型 (通常包含 Attention)
+        cross_attention_dim=unet_cross_attn_dim, # <--- 修正維度，匹配 ConditionEmbedder
+        layers_per_block=2,                   # 每個 ResNet 區塊包含的層數 (預設通常是 2)
+        # attention_head_dim=8,               # (可選) 指定 Attention Head 的維度
+    ).to(device) # 移動模型到設備
 
     noise_scheduler = DDPMScheduler(
         num_train_timesteps=args.num_train_timesteps,
@@ -413,38 +479,62 @@ def main():
 
     condition_embedder = ConditionEmbedder(
         num_classes=args.num_classes,
-        embed_dim=args.cond_embed_dim # 確保有把cond_embed_dim這個值 (128) 傳遞給 UNet 的 cross_attention_dim
-    ).to(device) 
+        embed_dim=args.cond_embed_dim # 確保這個值 (128) 傳遞給 UNet 的 cross_attention_dim
+    ).to(device) # 移動模型到設備
 
+    # --- Optimizer and LR Scheduler ---
     params_to_optimize = list(unet.parameters()) + list(condition_embedder.parameters())
-    optimizer = torch.optim.AdamW(params_to_optimize,lr=args.learning_rate,betas=(args.adam_beta1, args.adam_beta2),weight_decay=args.adam_weight_decay,eps=args.adam_epsilon,)
+    optimizer = torch.optim.AdamW(
+        params_to_optimize,
+        lr=args.learning_rate,
+        betas=(args.adam_beta1, args.adam_beta2),
+        weight_decay=args.adam_weight_decay,
+        eps=args.adam_epsilon,
+    )
 
+    # Calculate total steps considering accumulation
     num_update_steps_per_epoch = len(train_dataloader) // args.gradient_accumulation_steps
     num_training_steps = num_update_steps_per_epoch * args.num_epochs
 
-    lr_scheduler = get_scheduler(args.lr_scheduler_type,optimizer=optimizer,num_warmup_steps=args.lr_warmup_steps, num_training_steps=num_training_steps,)
+    lr_scheduler = get_scheduler(
+        args.lr_scheduler_type,
+        optimizer=optimizer,
+        num_warmup_steps=args.lr_warmup_steps, # Note: warmup steps are optimization steps
+        num_training_steps=num_training_steps,
+    )
 
-    #  Load Evaluator 
+    # --- Load Evaluator ---
     evaluator = evaluation_model()
+    print("Evaluator loaded successfully.")
 
     wandb.init(project=args.wandb_project,name=args.wandb_run_name,config=vars(args),save_code=True,)
+    # wandb.watch(unet, log="all", log_freq=100)
+    # wandb.watch(condition_embedder, log="all", log_freq=100)
 
-    #  Training Loop 
+    # --- Training Loop ---
     global_step = 0
     print("***** Running training *****")
     print(f"  Num examples = {len(train_dataset)}")
     print(f"  Num Epochs = {args.num_epochs}")
-    #  Create pipeline for sampling 
+    print(f"  Batch size = {args.batch_size}")
+    print(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+    print(f"  Total optimization steps = {num_training_steps}")
+
+
+    # --- Create a basic pipeline for sampling ---
+    # Pass the models directly, they are already on the device
     pipeline = DDPMPipeline(unet=unet, scheduler=noise_scheduler)
-    scaler = GradScaler() 
-        
+
+
     for epoch in range(args.num_epochs):
         unet.train()
         condition_embedder.train()
         progress_bar = tqdm(total=len(train_dataloader), desc=f"Epoch {epoch+1}/{args.num_epochs}")
-        optimizer.zero_grad() 
+
+        optimizer.zero_grad() # Zero gradients at the start of epoch or before accumulation cycle
 
         for step, batch in enumerate(train_dataloader):
+            # Move batch to device
             images, label_vectors = batch
             images = images.to(device)
             label_vectors = label_vectors.to(device)
@@ -459,42 +549,65 @@ def main():
 
             # Get condition embeddings
             condition_embeddings = condition_embedder(label_vectors).unsqueeze(1)
-            
-            with autocast(device_type='cuda'):
-                # Predict noise
-                model_pred = unet(sample=noisy_images,timestep=timesteps,encoder_hidden_states=condition_embeddings).sample
-                loss = F.mse_loss(model_pred.float(), noise.float())
 
-            # --- Manual Gradient Accumulation ---
-            loss = loss / args.gradient_accumulation_steps # Scale loss
+            with autocast(device_type='cuda'): 
+                model_pred = unet(
+                    sample=noisy_images,
+                    timestep=timesteps,
+                    encoder_hidden_states=condition_embeddings
+                ).sample
+
+                loss = F.mse_loss(model_pred, noise)
+                loss = loss / args.gradient_accumulation_steps
+
             scaler.scale(loss).backward()
 
+
             if (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == len(train_dataloader):
-                scaler.unscale_(optimizer)
+                # Clip gradients (optional but recommended)
                 torch.nn.utils.clip_grad_norm_(
                      list(unet.parameters()) + list(condition_embedder.parameters()),
                      args.max_grad_norm
                  )
 
                 # Optimizer Step
-                scaler.step(optimizer) 
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    list(unet.parameters()) + list(condition_embedder.parameters()),
+                    args.max_grad_norm
+                )
+                scaler.step(optimizer)
                 scaler.update()
                 lr_scheduler.step()
-                optimizer.zero_grad() # Zero gradients after optimization step
+                optimizer.zero_grad()
 
+
+                # --- Logging ---
                 global_step += 1
                 current_lr = lr_scheduler.get_last_lr()[0]
+                # Log scaled loss or accumulate properly if needed for accuracy
                 wandb.log({"train_loss": loss.item() * args.gradient_accumulation_steps, "lr": current_lr}, step=global_step)
 
+                # --- Log intermediate images (Optional) ---
+                # if global_step % args.log_images_steps == 0:
+                #     # Implement sampling logic here if desired
+                #     pass
+
             progress_bar.update(1)
+            # Update postfix less frequently if using accumulation
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                progress_bar.set_postfix({"Loss": f"{loss.item() * args.gradient_accumulation_steps:.4f}", "LR": f"{current_lr:.1e}"})
-            
+                 progress_bar.set_postfix({"Loss": f"{loss.item() * args.gradient_accumulation_steps:.4f}", "LR": f"{current_lr:.1e}"})
+
+
+            # --- End Batch ---
+        # --- End Epoch ---
         progress_bar.close()
 
+        # --- Evaluation and Saving ---
         if (epoch + 1) % eval_epochs == 0 or epoch == args.num_epochs - 1:
-            eval_results = evaluate_model(evaluator=evaluator,
-                pipeline=pipeline, 
+            eval_results = evaluate_model(
+                evaluator=evaluator,
+                pipeline=pipeline, # Pass the pipeline object with models on device
                 scheduler=noise_scheduler,
                 condition_embedder=condition_embedder, # Pass model directly
                 test_labels_dict=test_labels_dict,
@@ -504,21 +617,21 @@ def main():
                 global_step=global_step
             )
 
-            # Save Model 
-            mean_accuracy = eval_results.get('mean_accuracy', 0.0)
+            # --- Conditionally Save Model Checkpoint ---
+            mean_accuracy = eval_results.get('mean_accuracy', 0.0) # Get mean accuracy
             if mean_accuracy > args.save_model_threshold:
                 eval_epochs = 2
                 print(f"Mean Accuracy ({mean_accuracy:.4f}) > Threshold ({args.save_model_threshold}). Saving model for Epoch {epoch + 1}...")
                 save_path = output_dir / f"model_epoch_{epoch+1}_acc_{mean_accuracy:.4f}"
                 save_path.mkdir(exist_ok=True)
+
+                # Save models state dicts
                 torch.save(unet.state_dict(), save_path / "unet.pth")
                 torch.save(condition_embedder.state_dict(), save_path / "condition_embedder.pth")
                 print(f"Model saved to {save_path}")
             else:
                 print(f"Mean Accuracy ({mean_accuracy:.4f}) <= Threshold ({args.save_model_threshold}). Skipping model saving for Epoch {epoch + 1}.")
-            
-            gc.collect()
-            torch.cuda.empty_cache()
+
 
     print("Training Finished!")
     wandb.finish()

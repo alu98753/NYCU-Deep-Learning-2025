@@ -35,7 +35,7 @@ transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
 
 class evaluation_model():
-    def __init__(self):
+    def __init__(self, device='cuda'):
         #modify the path to your own path
         checkpoint = torch.load('file/checkpoint.pth')
         self.resnet18 = models.resnet18(pretrained=False)
@@ -47,6 +47,8 @@ class evaluation_model():
         self.resnet18 = self.resnet18.cuda()
         self.resnet18.eval()
         self.classnum = 24
+        self.device = torch.device(device)
+
     def compute_acc(self, out, onehot_labels):
         batch_size = out.size(0)
         acc = 0
