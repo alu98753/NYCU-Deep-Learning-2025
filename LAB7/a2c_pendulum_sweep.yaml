@@ -1,0 +1,33 @@
+program: /home/asiadragon/Desktop/zi/NYCU-Deep-Learning-2025/LAB7/a2c_pendulum.py
+method: bayes # 或者 random, grid
+metric:
+  name: avg_evalscore_vs_env_steps #  wandb.log 中記錄的最佳評估分數
+  goal: maximize
+project: DLP-Lab7-Task1-Final-version # Sweep 的 project name
+
+parameters:
+  actor-lr:
+    values: 
+      - 0.0003
+  critic-lr:
+    values: 
+      - 0.0003
+  actor_architecture_key:
+    values: 
+      - arch1_256_256
+  critic_architecture_key:
+    values:
+      - "arch1_256_256"
+  optimizer_choice: # 0 for Adam, 1 for AdamW
+    values: [0]
+
+  entropy-weight:
+    distribution: uniform
+    min: 0.009
+    max: 0.01
+  discount-factor:
+    values: [0.9]
+  max_norm:
+    values: [0.5,1.0]
+  dropout_rate:
+    values: [0.0]
