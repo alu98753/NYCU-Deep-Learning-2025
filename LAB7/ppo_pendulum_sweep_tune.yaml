@@ -1,0 +1,55 @@
+program: /home/asiadragon/Desktop/zi/NYCU-Deep-Learning-2025/LAB7/ppo_pendulum.py
+method: bayes # 或者 random, grid
+metric:
+  name: eval_score_vs_env_steps 
+  goal: maximize
+project: DLP-Lab7-PPO-Pendulum-tune2 # Sweep 的 project name
+
+parameters:
+  actor-lr:
+    distribution: log_uniform_values
+    min: 5e-4
+    max: 1e-3
+  critic-lr:
+    distribution: log_uniform_values
+    min: 1e-3
+    max: 5e-3 # Critic LR 通常可以大一點或等於 Actor LR
+
+  actor_architecture_key:
+    values: 
+      # - "arch1_128_128" # [128, 64]
+      # - "arch1_256_128" # [256, 128]
+
+      - "arch1_64_32"  # [64, 32]
+      # - "arch1_128_64" # [128, 64]
+      # - "arch2_64"     # [64]
+      # - "arch2_128"    # [128]
+      # - "arch2_256"    # [256]
+  critic_architecture_key:
+    values:
+      # - "arch1_128_128" # [128, 64]
+      - "arch1_256_128"
+
+      # - "arch1_64_32"
+      # - "arch1_128_64"
+      # - "arch2_64"
+      # - "arch2_128"
+      # - "arch2_256"
+      
+  optimizer_choice: # 0 for Adam, 1 for AdamW
+    values: [0]
+
+  entropy-weight:
+    values: [5e-6]
+  discount-factor:
+    values: [0.9]
+  batch-size:
+    values: [64]
+  tau:
+    values: [0.98]
+  max_norm:
+    values: [0.5, 1.0, 2.0]
+  # epsilon:
+  #   values: [0.2, 0.3, 0.4]
+  dropout-rate:
+    values: [0.1]

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # Spring 2025, 535507 Deep Learning
 # Lab7: Policy-based RL
-# Task 2: PPO-Clip
+# Task 3: PPO-Clip
 # Contributors: Wei Hung and Alison Wen
 # Instructor: Ping-Chun Hsieh
 
@@ -10,8 +10,10 @@ import random
 from collections import deque
 from typing import Deque, List, Tuple
 
+import warnings
 import gymnasium as gym
-
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="gymnasium.envs.registration")
+# 避免 gymnasium 的 DeprecationWarning
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,10 +30,11 @@ from collections import deque
 import re
 # torch.autograd.set_detect_anomaly(True)
 class Normalizer:
-    def __init__(self, obs_dim, eps=1e-8):
+    def __init__(self, obs_dim, clip_range=5.0, eps=1e-8):
         self.mean = np.zeros(obs_dim)
         self.var = np.ones(obs_dim)
         self.count = 0
+        self.clip_range = clip_range
         self.eps = eps
 
     def update(self, x):
@@ -61,10 +64,12 @@ class Normalizer:
         return new_mean, new_var, new_count
 
     def normalize(self, x):
-        return (x - self.mean) / np.sqrt(self.var + self.eps)
+        normalized_x = (x - self.mean) / (np.sqrt(self.var) + self.eps)
+        clipped_x = np.clip(normalized_x, -self.clip_range, self.clip_range)
+        return clipped_x
+
 
     def reset(self):
-        # 方便在 reset 環境時也重置 normalizer
         self.mean = np.zeros_like(self.mean)
         self.var = np.ones_like(self.var)
         self.count = 0
@@ -81,16 +86,17 @@ def init_layer_uniform(layer: nn.Linear, init_w: float = 3e-3) -> nn.Linear:
 class Actor(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden_dims: List[int] = [128, 64], log_std_min: int = -20, log_std_max: int = 2, dropout_p: float = 0.0): # 調整了預設的 log_std_max
         super(Actor, self).__init__()
-        self.dropout_p = dropout_p # 保存 dropout 率
+        self.dropout_p = dropout_p 
 
         layers = []
         prev_dim = in_dim
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             layers.append(nn.ReLU())
+            # layers.append(nn.Tanh()) 
             if self.dropout_p > 0: # 如果 dropout_p > 0 才加入 Dropout 層
                 layers.append(nn.Dropout(p=self.dropout_p))
-            init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2]) # 初始化剛加入的線性層
+            init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2]) 
             prev_dim = hidden_dim
         
         self.hidden_layers = nn.Sequential(*layers)
@@ -105,10 +111,11 @@ class Actor(nn.Module):
         x = self.hidden_layers(state)
         
         mean = self.mean_layer(x)
+        # mean = torch.tanh(self.mean_layer(x)) # 這裡的 tanh 可選
         
         log_std = self.log_std_layer(x)
-        log_std = torch.clamp(log_std, -2, 1.5) # 鉗位 log_std
-        std = torch.exp(log_std) + 1e-8 # 加入 epsilon
+        log_std = torch.clamp(log_std, -5, 2) 
+        std = torch.exp(log_std) + 1e-8 
         
         dist = Normal(mean, std)
         action = dist.sample() # PPO 通常在收集數據時也從分佈中採樣
@@ -125,6 +132,7 @@ class Critic(nn.Module):
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             layers.append(nn.ReLU())
+            # layers.append(nn.Tanh()) 
             if self.dropout_p > 0: # 如果 dropout_p > 0 才加入 Dropout 層
                 layers.append(nn.Dropout(p=self.dropout_p))
             init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2]) # 初始化剛加入的線性層
@@ -145,54 +153,14 @@ def compute_gae(
     """Compute gae."""
 
     ############TODO#############
-    # 將 lists of tensors 轉換為 tensors
-    # 假設 rewards, masks, values 列表中的 tensor 都只有一個元素 (PPOAgent.step 中 reward, done 都 reshape 了)
-    # 我們需要確保它們的形狀是 (rollout_len, 1)
-    # 在 PPOAgent.update_model 中，這些已經被 torch.cat 處理過了，
-    # 但 compute_gae 的輸入是 lists。
-    # 這裡假設傳入的 values, rewards, masks 是 rollout 期間的數據列表，
-    # 而 next_value 是 rollout 結束後的 V(s_{T+1})
-
-    # 將 values 列表擴展，包含 next_value 作為最後一個 V(s_{T+1})
-    # 確保所有輸入都是 tensor
-    # values 列表中的元素應該是 self.critic(state) 的輸出，形狀是 (1,1) 或 (1,)
-    # rewards 列表中的元素是 torch.FloatTensor(reward).to(self.device)，形狀是 (1,1)
-    # masks 列表中的元素是 torch.FloatTensor(1 - done).to(self.device)，形狀是 (1,1)
-    
-    # 複製 values 列表以避免修改原始列表，並附加 next_value
-    # 注意：values 列表中的每個元素是 V(s_t)，長度為 rollout_len
-    # rewards 和 masks 的長度也是 rollout_len
-    # next_value 是 V(s_{rollout_len})，即第 rollout_len+1 個狀態的價值
-    
-    # 讓我們重新思考輸入，PPOAgent.update_model 中：
-    # next_value = self.critic(next_state) # next_state 是 rollout 結束後的下一個 state
-    # returns = compute_gae(next_value, self.rewards, self.masks, self.values, ...)
-    # self.rewards, self.masks, self.values 是 Python lists of Tensors.
-
     gae_values = [torch.zeros_like(values[0]) for _ in range(len(values) + 1)] # 用於存儲 GAE estimates
     gae_returns = [torch.zeros_like(values[0]) for _ in range(len(values))]      # 用於存儲 target returns R_t
 
-    gae = torch.zeros_like(values[0]) # 初始化 gae 累加器
+    gae = torch.zeros_like(values[0]) 
     
-    # 從後往前遍歷 rollout 數據
-    # values[i] is V(s_i)
-    # rewards[i] is r_i
-    # masks[i] is (1-done_i) for s_i -> s_{i+1} transition
-    # next_V_for_delta: for rewards[i] and values[i], the "next value" is values[i+1]
-    # For the last step of rollout (index T-1 if T is rollout_len):
-    # delta_T-1 = rewards[T-1] + gamma * next_value * masks[T-1] - values[T-1]
-    # (next_value here is V(s_T))
-
-    # 為了方便，我們把 next_value 視為 V(s_N) 其中 N = rollout_len
-    # values 列表是 [V(s_0), V(s_1), ..., V(s_{N-1})]
-    # rewards 列表是 [r_0, r_1, ..., r_{N-1}] (r_i 是 s_i -> s_{i+1} 的獎勵)
-    # masks 列表是 [m_0, m_1, ..., m_{N-1}] (m_i 是 s_i -> s_{i+1} 的 (1-done) )
-
     # 從最後一步 (N-1) 往前計算
     for i in reversed(range(len(rewards))): # i from rollout_len-1 down to 0
         # V(s_{i+1})
-        # 如果 i 是 rollout 的最後一步 (len(rewards)-1)，那麼 V_next 就是傳入的 next_value
-        # 否則，V_next 就是 values[i+1]
         if i == len(rewards) - 1:
             v_next_s = next_value # V(s_{rollout_len})
         else:
@@ -202,21 +170,15 @@ def compute_gae(
         delta = rewards[i] + gamma * v_next_s * masks[i] - values[i]
         
         # GAE: A_i = delta_i + gamma * tau * mask_i * A_{i+1}
-        # 這裡的 gae 變數實際上是 A_{i+1} (來自上一步迭代)
         gae = delta + gamma * tau * masks[i] * gae
         
         # Target Return: R_i = A_i + V(s_i)
-        # 我們將 gae (即 A_i) 存起來，或者直接計算 return
-        # 根據 PPOAgent.update_model, returns = compute_gae(...) and advantages = returns - values
-        # 所以 compute_gae 應該返回 R_t = A_t + V(s_t)
         current_return = gae + values[i]
-        gae_returns[i] = current_return # 存儲 R_i
-    
+        gae_returns[i] = current_return 
+
     
     return gae_returns
 
-# PPO updates the model several times(update_epoch) using the stacked memory. 
-# By ppo_iter function, it can yield the samples of stacked memory by interacting a environment.
 def ppo_iter(
     update_epoch: int,
     mini_batch_size: int,
@@ -269,7 +231,10 @@ class PPOAgent:
         self.rollout_len = cfg.get('rollout_len', args.rollout_len)
         self.entropy_weight = cfg.get('entropy_weight', args.entropy_weight)
         self.update_epoch = int(cfg.get('update_epoch', args.update_epoch)) 
-
+        
+        self.initial_actor_lr = cfg.get('actor_lr', args.actor_lr)
+        self.initial_critic_lr = cfg.get('critic_lr', args.critic_lr)
+        self.anneal_lr_flag = cfg.get('anneal_lr', args.anneal_lr)
         self.actor_lr = cfg.get('actor_lr', args.actor_lr)
         self.critic_lr = cfg.get('critic_lr', args.critic_lr)
         
@@ -279,6 +244,7 @@ class PPOAgent:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Device: {self.device}")
 
+        # 解析NN
         actor_arch_key = cfg.get('actor_architecture_key', "arch1_128_64") 
         critic_arch_key = cfg.get('critic_architecture_key', "arch1_128_64")
 
@@ -306,6 +272,7 @@ class PPOAgent:
         obs_dim = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
         self.obs_dim = obs_dim
+        self.action_dim = action_dim
         self.actor = Actor(obs_dim, action_dim, hidden_dims=actor_hidden_dims,dropout_p=self.dropout_rate).to(self.device)
         self.critic = Critic(obs_dim, hidden_dims=critic_hidden_dims,dropout_p=self.dropout_rate).to(self.device)
 
@@ -329,6 +296,7 @@ class PPOAgent:
         self.log_probs: List[torch.Tensor] = []
 
         # total steps count
+        self.ep_count = 0
         self.total_step = 1
 
         # mode: train / test
@@ -339,14 +307,36 @@ class PPOAgent:
         self.max_norm = cfg.get('max_norm', args.max_norm)
         self.best_eval_score = -float('inf') # Track best evaluation score
 
+        self.init_entropy_weight = args.entropy_weight
+        self.logstd = 2
+        self.fraction = 1.0 # 用於計算 entropy_weight 的衰減比例
+
         if wandb.run is not None:
             run_identifier = wandb.run.id
         else:
             run_identifier = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         
-        self.save_dir_base = os.path.join("/home/asiadragon/Desktop/zi/NYCU-Deep-Learning-2025/LAB7/res_task2", f"task2_ppo_{run_identifier}")
+        self.save_dir_base = os.path.join("/home/asiadragon/Desktop/zi/NYCU-Deep-Learning-2025/LAB7/res/res_task3", f"task3_ppo_{run_identifier}")
+        # self.save_dir_base = os.path.join("/home/clu98753cs13/Desktop/DL/LAB7/res/res_task3", f"task3_ppo_{run_identifier}")
         print(f"Models will be saved in: {self.save_dir_base}")
-        self.normalizer = Normalizer(obs_dim)
+        self.normalizer_clip = cfg.get('obs_clip_range', args.obs_clip_range)
+        self.normalizer = Normalizer(obs_dim, clip_range=self.normalizer_clip)
+
+    def _update_lr(self):
+        """linear lr annealing."""
+        if self.anneal_lr_flag:
+            frac = 1.0 - (self.ep_count / self.num_episodes)
+            if frac <= 0.0:
+                frac = 0.0
+            curr_actor_lr = self.initial_actor_lr * frac
+            curr_critic_lr = self.initial_critic_lr * frac
+            for param_group in self.actor_optimizer.param_groups:
+                param_group['lr'] = curr_actor_lr
+                # print("epscount , frac",self.ep_count,frac)
+                # print("param_group['lr']",param_group['lr'])
+            for param_group in self.critic_optimizer.param_groups:
+                param_group['lr'] = curr_critic_lr
+            
 
     def save_model(self, path: str):
         """Saves the actor and critic models."""
@@ -374,8 +364,8 @@ class PPOAgent:
             self.normalizer.var = checkpoint['normalizer_var']
             self.normalizer.count = checkpoint['normalizer_count']
             print(f"Models loaded from {path}")
-            self.actor.eval() # 設定為評估模式
-            self.critic.eval()# 設定為評估模式
+            self.actor.eval() 
+            self.critic.eval()
         else:
             print(f"No model found at {path}, starting from scratch.")
 
@@ -397,6 +387,7 @@ class PPOAgent:
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, np.float64, bool]:
         """Take an action and return the response of the env."""
+        action = np.clip(action, -1.0, 1.0)
         next_state, reward, terminated, truncated, _ = self.env.step(action)
         done = terminated or truncated
         next_state = np.reshape(next_state, (1, -1)).astype(np.float64)
@@ -414,7 +405,7 @@ class PPOAgent:
 
         if not self.is_test:
             self.normalizer.update(next_state)
-            self.rewards.append(torch.FloatTensor(reward).to(self.device))
+            self.rewards.append(torch.FloatTensor([reward]).to(self.device))
             self.masks.append(torch.FloatTensor(1 - done).to(self.device))
 
         return next_state, reward, done
@@ -439,6 +430,8 @@ class PPOAgent:
         values = torch.cat(self.values).detach()
         log_probs = torch.cat(self.log_probs).detach()
         advantages = returns - values
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8) # 1e-8 防止除以零
+
 
         actor_losses, critic_losses = [], []
 
@@ -468,10 +461,7 @@ class PPOAgent:
             actor_loss_clipped = -torch.min(surr1, surr2).mean()
             
             # Entropy bonus
-            # dist.entropy() gives entropy for each sample in batch, for each action dim.
-            # For Normal, entropy is sum over action_dims. If action_dim=1, shape [mini_batch_size, 1]
-            # We want a scalar entropy bonus for the batch.
-            entropy_bonus = dist.entropy().mean() # .mean() to get a scalar average entropy for the batch
+            entropy_bonus = dist.entropy().mean() 
 
             actor_loss = actor_loss_clipped - self.entropy_weight * entropy_bonus
             
@@ -481,12 +471,10 @@ class PPOAgent:
             # critic_loss
             ############TODO#############
             # return_ (target returns R_t) shape: [mini_batch_size, 1]
-            # old_value (V_old(s_t) from data collection) is not used here, we need V_current(s_t)
-            # The critic is updated to predict return_ (which is R_t = GAE_t + V_old(s_t))
             current_values_predicted = self.critic(state) # V_phi(s_t), shape [mini_batch_size, 1]
             
             # Critic loss is typically mean squared error between predicted values and actual returns
-            critic_loss = F.smooth_l1_loss(current_values_predicted, return_)
+            critic_loss = F.mse_loss(current_values_predicted, return_)
             #############################
             
             # train critic
@@ -501,6 +489,17 @@ class PPOAgent:
             actor_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.max_norm)  # max_norm 可調整
             self.actor_optimizer.step()
+            
+            for param_group in self.actor_optimizer.param_groups:
+                wandb.log({
+                    "step": self.total_step,
+                    "curr_actor_lr": param_group['lr']
+                })
+            for param_group in self.critic_optimizer.param_groups:
+                wandb.log({
+                    "step": self.total_step,
+                    "curr_critic_lr": param_group['lr']
+                })
 
             actor_losses.append(actor_loss.item())
             critic_losses.append(critic_loss.item())
@@ -517,19 +516,36 @@ class PPOAgent:
         """Train the PPO agent."""
         self.is_test = False
 
-        state, _ = self.env.reset()
+        state, _ = self.env.reset(seed = self.seed)
         state = np.expand_dims(state, axis=0)
 
         actor_losses, critic_losses = [], []
         scores = []
         score = 0
         episode_count = 0
+        
+        milestone = {
+            1_000_000: "1m", 
+            1_500_000: "1p5m",
+            2_000_000: "2m",
+            2_500_000: "2p5m",
+            3_000_000: "3m"
+        }
+        saved_milestones = set()
+        
         for ep in tqdm(range(1, int(self.num_episodes)+1)):
             score = 0
             print("\n")
+            
+            if self.anneal_lr_flag:
+                self._update_lr()
+
             for _ in range(self.rollout_len):
                 self.total_step += 1
                 action = self.select_action(state)
+                
+                action = action.reshape(self.action_dim,)
+
                 next_state, reward, done = self.step(action)
 
                 state = next_state
@@ -543,41 +559,53 @@ class PPOAgent:
                     })
 
                     episode_count += 1
-                    # state, _ = self.env.reset(seed=self.seed)
-                    state, _ = self.env.reset()  # 不限制 seed
+                    state, _ = self.env.reset(seed=self.seed)
+                    # state, _ = self.env.reset()  # 不限制 seed
 
                     state = np.expand_dims(state, axis=0)
                     scores.append(score)
                     score = 0
-
+                
+                for steps_milestone, suffix in milestone.items():
+                    if self.total_step >= steps_milestone and steps_milestone not in saved_milestones:
+                        model_filename = f"LAB7_{self.student_id}_task3_ppo_{suffix}.pt"
+                        model_save_path = os.path.join(self.save_dir_base, model_filename)
+                        os.makedirs(self.save_dir_base, exist_ok=True)
+                        self.save_model(model_save_path)
+                        print(f"\nTask 3 Milestone: Model saved to {model_save_path} at {self.total_step} steps.")
+                        saved_milestones.add(steps_milestone)
+                        
             actor_loss, critic_loss, entropy_bonus = self.update_model(next_state)
             actor_losses.append(actor_loss)
             critic_losses.append(critic_loss)
-            wandb.log({
-                "step": self.total_step,
-                "actor_loss_per_step": actor_loss, # 建議改名以區分
-                "critic_loss_per_step": critic_loss, # 建議改名以區分
-                "entropy_bonus": entropy_bonus,
-            }) 
             
             avg_eval_score = self.test_agent_performance(
                 mode = args.mode,
                 num_episodes_to_test=args.num_test_episodes,
-                video_save_path_base="" # Explicitly disable video recording
+                video_save_path_base="" # disable video recording
             )
             wandb.log({
                 "step": self.total_step,
-                "avg_evalscore_vs_env_steps": avg_eval_score 
+                "actor_loss_per_step": actor_loss, 
+                "critic_loss_per_step": critic_loss, 
+                "entropy_bonus": entropy_bonus,
+                "avg_evalscore_vs_env_steps": avg_eval_score ,
+                "obs_mean_scalar_avg": self.normalizer.mean,
+                "std_scalar_avg": np.sqrt(self.normalizer.var + self.normalizer.eps),
             })
-
-            if avg_eval_score > -180 :
+            
+            
+            if avg_eval_score > self.best_eval_score:
+                self.best_eval_score = avg_eval_score
+            
+            if avg_eval_score > 2200 :
                 os.makedirs(self.save_dir_base, exist_ok=True)
-                model_filename = f"LAB7_{self.student_id}_{self.student_name}_task2_ppo_pendulum_step_{self.total_step}.pt"
+                model_filename = f"LAB7_{self.student_id}_task3_ppo_{self.total_step}.pt"
                 model_save_path = os.path.join(self.save_dir_base, model_filename)
                 self.save_model(model_save_path)
                 print(f"Model saved to {model_save_path} (Score: {avg_eval_score} at episode {ep}, step {self.total_step})")
+            self.ep_count +=1
 
-        # termination
         self.env.close()
 
     def test(self, video_folder: str):
@@ -613,7 +641,7 @@ class PPOAgent:
                 - Video recording is handled based on video_save_path_base.
             Returns the average score (for 'train' mode) or the best 20-episode average score (for 'test' mode).
             """
-            self.is_test = True  # 確保使用確定性動作 (dist.mean)
+            self.is_test = True  
             self.actor.eval()    
             self.critic.eval()  
 
@@ -631,7 +659,9 @@ class PPOAgent:
                         episode_video_folder_train = os.path.join(video_save_path_base, f"eval_episode_{i+1}")
                         os.makedirs(episode_video_folder_train, exist_ok=True)
                         try:
-                            clean_base_env = gym.make("Pendulum-v1", render_mode="rgb_array")
+                            clean_base_env = gym.make("Walker2d-v4", render_mode="rgb_array")
+                            desired_video_output_fps = 150
+                            clean_base_env.metadata['render_fps'] = desired_video_output_fps
                             current_test_env = gym.wrappers.RecordVideo(
                                 clean_base_env,
                                 video_folder=episode_video_folder_train,
@@ -640,9 +670,9 @@ class PPOAgent:
                             )
                         except Exception as e:
                             print(f"Failed to initialize video recording: {e}. Falling back.")
-                            current_test_env = gym.make("Pendulum-v1", render_mode="rgb_array" if video_save_path_base else None) # Fallback
+                            current_test_env = gym.make("Walker2d-v4", render_mode="rgb_array" if video_save_path_base else None) # Fallback
                     else:
-                        current_test_env = gym.make("Pendulum-v1", render_mode="rgb_array" if video_save_path_base else None)
+                        current_test_env = gym.make("Walker2d-v4", render_mode="rgb_array" if video_save_path_base else None)
 
 
                     state, _ = current_test_env.reset(seed=eval_seed + i)
@@ -682,17 +712,9 @@ class PPOAgent:
 
                 base_search_seed = 6501
 
-                # For video recording, we might only want to record the *best* window if enabled.
-                # Recording 10000 episodes is too much.
-                # So, video recording during this extensive search will be disabled by default.
-                # If video_save_path_base is provided, it will be used to record the *final single run*
-                # of the best window identified.
-
                 for i in tqdm(range(find_best_seed_episodes), desc="Finding Best Seed Window"):
                     current_seed_for_episode = base_search_seed + i
-                    # No video recording during the search loop itself to save time/space
-                    # We use a new env instance for each episode to ensure clean resets with new seeds
-                    test_env_search = gym.make("Pendulum-v1") # No render_mode needed for search logic
+                    test_env_search = gym.make("Walker2d-v4") # No render_mode needed for search logic
                     
                     state, _ = test_env_search.reset(seed=current_seed_for_episode)
                     episode_score = 0.0
@@ -704,21 +726,20 @@ class PPOAgent:
                         state = next_state
                         episode_score += reward if isinstance(reward, (float, int)) else reward.item()
                     
-                    test_env_search.close() # Close the env after each episode
+                    test_env_search.close() 
                     recent_scores_deque.append(episode_score)
 
                     if len(recent_scores_deque) == window_size:
                         current_rolling_avg = np.mean(list(recent_scores_deque))
                         if current_rolling_avg > best_rolling_avg_score:
                             best_rolling_avg_score = current_rolling_avg
-                            # The window started `window_size - 1` episodes ago from the current episode `i`.
-                            # So the seed for the start of this window was `base_search_seed + i - (window_size - 1)`
                             best_seed_for_window_start = base_search_seed + i - (window_size - 1)
                             # print(f"\nNew best {window_size}-episode rolling average: {best_rolling_avg_score:.2f} starting with seed {best_seed_for_window_start} (at episode {i+1})")
 
                 print(f"\nExtensive Test Complete. Best {window_size}-episode rolling average score: {best_rolling_avg_score:.2f}")
                 print(f"This best window started with seed: {best_seed_for_window_start}")
-
+                os.environ["MUJOCO_GL"] = "egl"
+                os.environ["DISPLAY"] = ":0"
                 # Optional: Re-run and record the best 20-episode window if video_save_path_base is provided
                 if record_video and best_seed_for_window_start != -1:
                     print(f"\nRe-running and recording the best {window_size}-episode window starting with seed {best_seed_for_window_start}...")
@@ -732,7 +753,7 @@ class PPOAgent:
                         os.makedirs(episode_video_folder_test, exist_ok=True)
                         
                         try:
-                            clean_base_env_final = gym.make("Pendulum-v1", render_mode="rgb_array")
+                            clean_base_env_final = gym.make("Walker2d-v4", render_mode="rgb_array")
                             current_test_env_final = gym.wrappers.RecordVideo(
                                 clean_base_env_final,
                                 video_folder=episode_video_folder_test,
@@ -741,7 +762,7 @@ class PPOAgent:
                             )
                         except Exception as e:
                             print(f"Failed to initialize video recording for best window: {e}. Skipping video for this episode.")
-                            current_test_env_final = gym.make("Pendulum-v1") # No render_mode if video fails
+                            current_test_env_final = gym.make("Walker2d-v4") # No render_mode if video fails
 
                         state_final, _ = current_test_env_final.reset(seed=episode_seed)
                         episode_score_final = 0.0
@@ -766,9 +787,9 @@ class PPOAgent:
                 self.is_test = False
                 self.actor.train()
                 self.critic.train()
-                return best_rolling_avg_score # Return the identified best rolling average
+                return best_rolling_avg_score 
             
-            else: # Should not happen with current args.mode choices
+            else: # Should not happen
                 print(f"Warning: Unknown mode '{mode}' in test_agent_performance. Returning -inf.")
                 self.is_test = False
                 self.actor.train()
@@ -783,52 +804,51 @@ def seed_torch(seed):
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--wandb-run-name", type=str, default="pendulum-ppo-run")
-    parser.add_argument("--actor-lr", type=float, default=0.001)
-    parser.add_argument("--critic-lr", type=float, default=0.005)
-    parser.add_argument("--actor_architecture_key", type=str, default="arch1_128_128", 
-                        help="Actor network: e.g., arch1_128_64 for [128,64], arch2_256 for [256]")
-    parser.add_argument("--critic_architecture_key", type=str, default="arch1_128_128",
-                        help="Critic network: e.g., arch1_128_64 for [128,64], arch2_256 for [256]")
-    parser.add_argument("--optimizer_choice", type=int, default=0, choices=[0, 1], 
-                        help="Optimizer: 0 for Adam, 1 for AdamW")
+    parser.add_argument("--actor-lr", type=float, default=3e-4)
+    parser.add_argument("--critic-lr", type=float, default=1e-3)
+    parser.add_argument("--anneal_lr", type=lambda x: (str(x).lower() == 'true'), default=True)
     
+    parser.add_argument("--actor_architecture_key", type=str, default="arch1_64_64", help="Actor network: e.g., arch1_256_256 for [128,64], arch2_256 for [256]")
+    parser.add_argument("--critic_architecture_key", type=str, default="arch1_64_64",help="arch1_400_300 arch1_64_64 As upove, but for critic network")
+    parser.add_argument("--optimizer_choice", type=int, default=0, choices=[0, 1], help="Optimizer: 0 for Adam, 1 for AdamW")
     
-    parser.add_argument("--discount-factor", type=float, default=0.9)#0.995 0.97 or 0.95 , not 0.99 98 96
-    parser.add_argument("--num-episodes", type=float, default=100)
+    parser.add_argument("--discount-factor", type=float, default=0.99)
+    parser.add_argument("--num-episodes", type=float, default=3010000 // 2048) # 3000000 steps, 2048 steps per episode
     parser.add_argument("--seed", type=int, default=777)#77,777
     parser.add_argument("--entropy-weight", type=float, default=5e-6)#1e-5  5e-6           # entropy can be disabled by setting this to 0
-    parser.add_argument("--tau", type=float, default=0.98)#0.98 0.97 ,0.95
-    parser.add_argument("--batch-size", type=int, default=256)#256
-    parser.add_argument("--epsilon", type=int, default=0.1)#0.1
-    parser.add_argument("--rollout-len", type=int, default=2048)#2000
-    parser.add_argument("--update-epoch", type=float, default=64) #64
+    parser.add_argument("--tau", type=float, default=0.95)#0.98 0.97 ,0.95
+    parser.add_argument("--batch-size", type=int, default=64)#256
+    parser.add_argument("--epsilon", type=int, default=0.2)#0.1
+    parser.add_argument("--rollout-len", type=int, default=2048)
+    parser.add_argument("--update-epoch", type=float, default=10)
+    parser.add_argument("--dropout-rate", type=float, default=0.0, help="Dropout rate for actor and critic networks (0.0 to disable)")
+    parser.add_argument("--obs_clip_range", type=float, default=5.0, help="Observation clipping range")
     
-    parser.add_argument("--max_norm", type=float, default=1)
+    parser.add_argument("--max_norm", type=float, default=0.5)
     
-    parser.add_argument("--wandb_project", type=str, default="DLP-Lab7-PPO-Pendulum", help="W&B project name for PPO")
+    parser.add_argument("--wandb_project", type=str, default="DLP-Lab7-PPO-walker", help="W&B project name for PPO")
+    parser.add_argument("--wandb-run-name", type=str, default="walker-ppo-run")
+
     parser.add_argument("--mode", type=str, default="train", choices=["train", "test"],help="Mode to run: 'train' or 'test'")
     parser.add_argument("--model_path", type=str, default=None,help="Path to load a pre-trained model for testing")
-    parser.add_argument("--video_save_dir", type=str, default="videos_task2", help="Base directory to save PPO test videos")
+    parser.add_argument("--video_save_dir", type=str, default="videos/videos_task3", help="Base directory to save PPO test videos")
     parser.add_argument("--num_test_episodes", type=int, default=20, help="Number of episodes to run for testing")
-    parser.add_argument("--student_id", type=str, default="313554044", help="Your Student ID") # 從 args 獲取
-    parser.add_argument("--student_name", type=str, default="黃梓誠", help="Your Name")     # 從 args 獲取
-    parser.add_argument("--dropout-rate", type=float, default=0.1, help="Dropout rate for actor and critic networks (0.0 to disable)")
-    parser.add_argument("--num_extensive_test_episodes", type=int, default=10000, help="Number of episodes for extensive seed finding in test mode")
+    parser.add_argument("--student_id", type=str, default="313554044", help="Your Student ID") 
+    parser.add_argument("--student_name", type=str, default="黃梓誠", help="Your Name")     
+    parser.add_argument("--num_extensive_test_episodes", type=int, default=20, help="Number of episodes for extensive seed finding in test mode")
 
     args = parser.parse_args()
  
     # environment
-    clean_env = gym.make("Pendulum-v1", render_mode="rgb_array")
-    env = gym.wrappers.RescaleAction(clean_env, min_action=-1, max_action=1)
+    clean_env = gym.make("Walker2d-v4", render_mode="rgb_array")
+    env = gym.wrappers.RescaleAction(clean_env, min_action=-1, max_action=1 )
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
     seed_torch(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed) # if use multi-GPU
-
+        torch.cuda.manual_seed_all(seed)
     
     if args.mode == "train":
         run = wandb.init(project=args.wandb_project, config=args, name=args.wandb_run_name, save_code=True)
@@ -846,12 +866,9 @@ if __name__ == "__main__":
             path_parts = args.model_path.split(os.sep)
             run_folder_name = path_parts[-2] 
             model_file_basename = os.path.splitext(path_parts[-1])[0] 
-            
-            # 提取 episode number
             match_ep = re.search(r'_ep(\d+)$', model_file_basename)
             ep_identifier = f"_ep{match_ep.group(1)}" if match_ep else "_unknown_ep"
             
-            # 影片儲存的特定路徑
             # args.video_save_dir 是基礎目錄，例如 "videos_lab7_task1"
             video_specific_folder = os.path.join(args.video_save_dir, run_folder_name + ep_identifier)
         except Exception as e:
@@ -867,15 +884,15 @@ if __name__ == "__main__":
         agent = PPOAgent(env, args) 
         agent.load_model(args.model_path) 
         avg_test_score = agent.test_agent_performance(
-            mode=args.mode, # 會是 "test"
-            num_episodes_to_test=args.num_test_episodes, # 這個參數在 test mode 下實際不會被舊邏輯使用
+            mode=args.mode, 
+            num_episodes_to_test=args.num_test_episodes,
             video_save_path_base=video_specific_folder,
-            find_best_seed_episodes=args.num_extensive_test_episodes # 新增的
+            find_best_seed_episodes=args.num_extensive_test_episodes 
         )
         
         print(f"\nFINAL PPO Average score over {args.num_test_episodes} test episodes: {avg_test_score:.2f}")
         
         if wandb.run and wandb.run.mode != "disabled":
             wandb.log({"final_ppo_average_test_score": avg_test_score})
-        if wandb.run: # 確保總是 finish
+        if wandb.run: 
             wandb.finish()

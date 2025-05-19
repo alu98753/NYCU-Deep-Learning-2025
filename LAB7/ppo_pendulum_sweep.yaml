@@ -1,0 +1,25 @@
+program: /home/asiadragon/Desktop/zi/NYCU-Deep-Learning-2025/LAB7/ppo_pendulum.py
+method: bayes # 或者 random, grid
+metric:
+  name: eval_score_vs_env_steps #  wandb.log 中記錄的最佳評估分數
+  goal: maximize
+project: DLP-Lab7-PPO-Pendulum
+parameters:
+  actor-lr:
+    values: [1e-3]
+  critic-lr:
+    values: [3e-3]
+  entropy-weight:
+    values: [0.01,1e-5,5e-6]
+  discount-factor:
+    values: [0.9,0.99,0.97,0.95,0.995]
+  batch-size:
+    values: [64, 128, 256]
+  tau:
+    values: [0.98,0.97,0.99]
+  
+  # 可以考慮的還有網路結構，但我們先從學習率和權重開始
+  # hidden_fc1_units:
+  #   values: [64, 128, 256]
+  # hidden_fc2_units:
+  #   values: [32, 64, 128]

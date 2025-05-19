@@ -93,8 +93,8 @@ class Actor(nn.Module):
         prev_dim = in_dim
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            # layers.append(nn.ReLU())
-            layers.append(nn.Tanh()) 
+            layers.append(nn.ReLU())
+            # layers.append(nn.Tanh()) 
             if self.dropout_p > 0: # 如果 dropout_p > 0 才加入 Dropout 層
                 layers.append(nn.Dropout(p=self.dropout_p))
             init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2]) # 初始化剛加入的線性層
@@ -111,8 +111,8 @@ class Actor(nn.Module):
     def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.distributions.Normal]: 
         x = self.hidden_layers(state)
         
-        # mean = self.mean_layer(x)
-        mean = torch.tanh(self.mean_layer(x)) # 這裡的 tanh 是可選的，根據需求決定是否使用
+        mean = self.mean_layer(x)
+        # mean = torch.tanh(self.mean_layer(x)) # 這裡的 tanh 是可選的，根據需求決定是否使用
         
         log_std = self.log_std_layer(x)
         log_std = torch.clamp(log_std, -5, 2) 
@@ -320,6 +320,7 @@ class PPOAgent:
             run_identifier = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         
         self.save_dir_base = os.path.join("/home/asiadragon/Desktop/zi/NYCU-Deep-Learning-2025/LAB7/res/res_task3", f"task3_ppo_{run_identifier}")
+        # self.save_dir_base = os.path.join("/home/clu98753cs13/Desktop/DL/LAB7/res/res_task3", f"task3_ppo_{run_identifier}")
         print(f"Models will be saved in: {self.save_dir_base}")
         self.normalizer_clip = cfg.get('obs_clip_range', args.obs_clip_range)
         self.normalizer = Normalizer(obs_dim, clip_range=self.normalizer_clip)
@@ -389,6 +390,7 @@ class PPOAgent:
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, np.float64, bool]:
         """Take an action and return the response of the env."""
+        action = np.clip(action, -1.0, 1.0)
         next_state, reward, terminated, truncated, _ = self.env.step(action)
         done = terminated or truncated
         next_state = np.reshape(next_state, (1, -1)).astype(np.float64)
@@ -522,7 +524,7 @@ class PPOAgent:
         """Train the PPO agent."""
         self.is_test = False
 
-        state, _ = self.env.reset()
+        state, _ = self.env.reset(seed = self.seed)
         state = np.expand_dims(state, axis=0)
 
         actor_losses, critic_losses = [], []
@@ -565,8 +567,8 @@ class PPOAgent:
                     })
 
                     episode_count += 1
-                    # state, _ = self.env.reset(seed=self.seed)
-                    state, _ = self.env.reset()  # 不限制 seed
+                    state, _ = self.env.reset(seed=self.seed)
+                    # state, _ = self.env.reset()  # 不限制 seed
 
                     state = np.expand_dims(state, axis=0)
                     scores.append(score)
@@ -595,10 +597,18 @@ class PPOAgent:
                 "actor_loss_per_step": actor_loss, 
                 "critic_loss_per_step": critic_loss, 
                 "entropy_bonus": entropy_bonus,
-                "avg_evalscore_vs_env_steps": avg_eval_score 
+                "avg_evalscore_vs_env_steps": avg_eval_score ,
+                "obs_mean_scalar_avg": self.normalizer.mean,
+                "std_scalar_avg": np.sqrt(self.normalizer.var + self.normalizer.eps),
             })
-
-            if avg_eval_score > 3000 :
+            
+            # log_dict[] = np.mean(current_obs_mean)
+            # log_dict[] = np.mean(current_obs_std)
+            
+            if avg_eval_score > self.best_eval_score:
+                self.best_eval_score = avg_eval_score
+            
+            if avg_eval_score > 2200 :
                 os.makedirs(self.save_dir_base, exist_ok=True)
                 model_filename = f"LAB7_{self.student_id}_task3_ppo_{self.total_step}.pt"
                 model_save_path = os.path.join(self.save_dir_base, model_filename)
@@ -660,6 +670,8 @@ class PPOAgent:
                         os.makedirs(episode_video_folder_train, exist_ok=True)
                         try:
                             clean_base_env = gym.make("Walker2d-v4", render_mode="rgb_array")
+                            desired_video_output_fps = 150
+                            clean_base_env.metadata['render_fps'] = desired_video_output_fps
                             current_test_env = gym.wrappers.RecordVideo(
                                 clean_base_env,
                                 video_folder=episode_video_folder_train,
@@ -816,8 +828,8 @@ if __name__ == "__main__":
     parser.add_argument("--critic-lr", type=float, default=1e-3)
     parser.add_argument("--anneal_lr", type=lambda x: (str(x).lower() == 'true'), default=True)
     
-    parser.add_argument("--actor_architecture_key", type=str, default="arch1_64_64", help="Actor network: e.g., arch1_128_64 for [128,64], arch2_256 for [256]")
-    parser.add_argument("--critic_architecture_key", type=str, default="arch1_64_64",help="As upove, but for critic network")
+    parser.add_argument("--actor_architecture_key", type=str, default="arch1_400_300", help="Actor network: e.g., arch1_256_256 for [128,64], arch2_256 for [256]")
+    parser.add_argument("--critic_architecture_key", type=str, default="arch1_400_300",help="arch1_400_300 arch1_64_64 As upove, but for critic network")
     parser.add_argument("--optimizer_choice", type=int, default=0, choices=[0, 1], help="Optimizer: 0 for Adam, 1 for AdamW")
     
     parser.add_argument("--discount-factor", type=float, default=0.99)
@@ -843,13 +855,13 @@ if __name__ == "__main__":
     parser.add_argument("--num_test_episodes", type=int, default=20, help="Number of episodes to run for testing")
     parser.add_argument("--student_id", type=str, default="313554044", help="Your Student ID") # 從 args 獲取
     parser.add_argument("--student_name", type=str, default="黃梓誠", help="Your Name")     # 從 args 獲取
-    parser.add_argument("--num_extensive_test_episodes", type=int, default=10000, help="Number of episodes for extensive seed finding in test mode")
+    parser.add_argument("--num_extensive_test_episodes", type=int, default=20, help="Number of episodes for extensive seed finding in test mode")
 
     args = parser.parse_args()
  
     # environment
     clean_env = gym.make("Walker2d-v4", render_mode="rgb_array")
-    env = gym.wrappers.RescaleAction(clean_env, min_action=-1, max_action=1)
+    env = gym.wrappers.RescaleAction(clean_env, min_action=-1, max_action=1 )
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)

@@ -96,8 +96,8 @@ class Actor(nn.Module):
         mean = self.mean_layer(x) 
         
         log_std = self.log_std_layer(x)
-        log_std = torch.clamp(log_std, -5, 1) # Adjusted clamp range
-        std = torch.exp(log_std) + 1e-8
+        log_std = torch.clamp(log_std, -20, 2) # Adjusted clamp range
+        std = torch.exp(log_std).clamp(min=1e-6)  # 防止極小值
         
         dist = Normal(mean, std)
         action = dist.sample() # Sample action for exploration during training
@@ -293,7 +293,8 @@ class A2CAgent:
 
         # Actor loss
         advantage = (td_target - current_value).detach() # Advantage A_t = Q_val - V(s_t)
-        
+        # advantage = (advantage - advantage.mean()) / (advantage.std(unbiased=False) + 1e-8)
+
         # actor_loss = -log_prob * advantage (log_prob and advantage are (1,1)) ,  entropy is also (1,1)
         policy_loss = (-log_prob * advantage - self.entropy_weight * entropy).mean()
 
@@ -334,16 +335,13 @@ class A2CAgent:
                         "step": self.total_step,
                         "actor_loss_per_step": actor_loss,
                         "critic_loss_per_step": critic_loss,
-                        "entropy_bonus_per_step": entropy_val, 
+                        "entropy_bonus": entropy_val, 
                         "policy_std_mean_per_step": current_std_mean,
                         "train_score_vs_env_steps": episode_score,
-                        "episode_num_for_train_score": ep 
                     }) 
             
             # Periodic evaluation 
-            if ep % self.eval_interval == 0 and ep > 500: 
-                if ep > 1000:
-                    self.eval_interval = 50 
+            if ep % self.eval_interval == 0 : 
                 avg_eval_score = self.test_agent_performance(mode="train", num_episodes_to_test=args.num_test_episodes, 
                     video_save_path_base="") # No video during training evals
 
@@ -351,16 +349,15 @@ class A2CAgent:
 
                 if avg_eval_score >= self.best_eval_score :
                     self.best_eval_score = avg_eval_score
-                    if avg_eval_score > -280 :  
+                    if avg_eval_score > 2200 :  
                         os.makedirs(self.save_dir_base, exist_ok=True)
-                        model_filename = f"LAB7_{self.student_id}_{self.student_name}_task1_a2c_pendulum_step_{self.total_step}.pt"
+                        model_filename = f"LAB7_{self.student_id}_{self.student_name}_task1_a2c_walker_step_{self.total_step}.pt"
                         model_save_path = os.path.join(self.save_dir_base, model_filename)
                         self.save_model(model_save_path)
                         print(f"Model saved to {model_save_path} (Best Eval Score: {self.best_eval_score:.2f} at episode {ep}, step {self.total_step})")
                 wandb.log({
                     "step": self.total_step,
                     "avg_evalscore_vs_env_steps": avg_eval_score,
-                    "episode_num_for_eval_score": ep, # X-axis for eval_score vs episode
                     "best_eval_score": self.best_eval_score,
                     "best_eval_score_episode": ep,
                 })
@@ -409,7 +406,7 @@ class A2CAgent:
             # Step 1: Find the best seed for the window
             for i in tqdm(range(find_best_seed_episodes), desc="A2C Finding Best Seed Window"):
                 current_seed_for_episode = base_search_seed + i
-                search_env = gym.make("Pendulum-v1") # No render_mode in test mode 
+                search_env = gym.make("Walker2d-v4") # No render_mode in test mode 
                 # Apply RescaleAction to match training conditions
                 search_env = gym.wrappers.RescaleAction(search_env, min_action=-1, max_action=1)
 
@@ -447,7 +444,7 @@ class A2CAgent:
                     os.makedirs(episode_video_folder_specific, exist_ok=True)
                     
                     try:
-                        final_video_env_clean = gym.make("Pendulum-v1", render_mode="rgb_array")
+                        final_video_env_clean = gym.make("Walker2d-v4", render_mode="rgb_array")
                         final_video_env_scaled = gym.wrappers.RescaleAction(final_video_env_clean, min_action=-1, max_action=1)
                         final_video_env = gym.wrappers.RecordVideo(
                             final_video_env_scaled,
@@ -457,7 +454,7 @@ class A2CAgent:
                         )
                     except Exception as e:
                         print(f"Failed to init video for A2C ep {k+1}: {e}. Skipping video.")
-                        final_video_env_clean = gym.make("Pendulum-v1") # Fallback
+                        final_video_env_clean = gym.make("Walker2d-v4") # Fallback
                         final_video_env = gym.wrappers.RescaleAction(final_video_env_clean, min_action=-1, max_action=1)
 
                     state_final, _ = final_video_env.reset(seed=episode_seed)
@@ -489,28 +486,28 @@ def seed_torch(seed):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--wandb_project", type=str, default="DLP-Lab7-A2C-Pendulum-tune", help="W&B project name for A2C")
-    parser.add_argument("--wandb_run_name", type=str, default="a2c-pendulum-run", help="W&B run name")
+    parser.add_argument("--wandb_project", type=str, default="DLP-Lab7-PPO-walker", help="W&B project name for A2C")
+    parser.add_argument("--wandb_run_name", type=str, default="a2c-walker-run", help="W&B run name")
     
     # Network and Optimizer
-    parser.add_argument("--actor_architecture_key", type=str, default="arch1_256_256", help="Actor network: e.g., arch1_128_64, arch2_256")
-    parser.add_argument("--critic_architecture_key", type=str, default="arch1_256_256", help="Critic network: e.g., arch1_128_64, arch2_256")
+    parser.add_argument("--actor_architecture_key", type=str, default="arch1_400_300", help="Actor network: e.g., arch1_128_64, arch2_256")
+    parser.add_argument("--critic_architecture_key", type=str, default="arch1_400_300", help="arch1_256_256 Critic network: e.g., arch1_128_64, arch2_256")
     parser.add_argument("--dropout_rate", type=float, default=0.0, help="Dropout rate for actor and critic")
     parser.add_argument("--optimizer_choice", type=int, default=0, choices=[0, 1], help="Optimizer: 0 for Adam, 1 for AdamW")
     parser.add_argument("--actor-lr", type=float, default=0.0003) # 1e-4 Common A2C LRs are a bit smaller
-    parser.add_argument("--critic-lr", type=float, default=0.0003) # 5e-4
-    parser.add_argument("--max_norm", type=float, default=1, help="Max norm for gradient clipping")#0.5
+    parser.add_argument("--critic-lr", type=float, default=1e-3) # 5e-4
+    parser.add_argument("--max_norm", type=float, default=0.5, help="Max norm for gradient clipping")#0.5
 
     # Algorithm Hyperparameters
-    parser.add_argument("--discount-factor", type=float, default=0.9)
-    parser.add_argument("--entropy-weight", type=float, default=0.01) #1e-3 A2C might benefit from slightly higher entropy
+    parser.add_argument("--discount-factor", type=float, default=0.99)
+    parser.add_argument("--entropy-weight", type=float, default=5e-6) #1e-3 A2C might benefit from slightly higher entropy
 
     # Training & Evaluation
-    parser.add_argument("--num-episodes-train", type=float, default=1000) # Number of episodes for training
+    parser.add_argument("--num-episodes-train", type=float, default=52500) # Number of episodes for training
     parser.add_argument("--seed", type=int, default=777)
-    parser.add_argument("--eval_interval", type=int, default=5, help="Evaluate N episodes every X training episodes")
+    parser.add_argument("--eval_interval", type=int, default=30, help="Evaluate N episodes every X training episodes")
     parser.add_argument("--num_test_episodes", type=int, default=20, help="Number of episodes for quick evaluation during training / final test window size")
-    parser.add_argument("--num_extensive_test_episodes", type=int, default=20, help="Number of episodes for extensive seed finding in test mode")
+    parser.add_argument("--num_extensive_test_episodes", type=int, default=10000, help="Number of episodes for extensive seed finding in test mode")
     parser.add_argument("--test_start_seed", type=int, default=6501, help="Start seed for the extensive test search window.")
 
     # Mode and Paths
@@ -525,7 +522,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Environment setup 
-    env = gym.make("Pendulum-v1", render_mode="rgb_array" if args.mode == "test" else None) # Render only if testing and video needed
+    env = gym.make("Walker2d-v4", render_mode="rgb_array" if args.mode == "test" else None) # Render only if testing and video needed
     env = gym.wrappers.RescaleAction(env, min_action=-1, max_action=1)
     
     # Seeding

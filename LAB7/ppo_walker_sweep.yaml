@@ -1,0 +1,51 @@
+program: /home/asiadragon/Desktop/zi/NYCU-Deep-Learning-2025/LAB7/ppo_walker.py
+method: bayes # 或者 random, grid
+metric:
+  name: train_score_vs_env_steps
+  goal: maximize
+project: DLP-Lab7-PPO-walker # Sweep 的 project name
+
+parameters:
+  # num-episodes:
+  #   values: [733]
+  actor-lr:
+    values: [3e-4]
+  critic-lr:
+    values: [3e-4] # 1e-3
+
+  actor_architecture_key:
+    values: 
+      - "arch1_64_64" # [128, 64]
+      # - "arch1_256_256" # [256, 128]
+
+      # - "arch2_256"    # [256]
+  critic_architecture_key:
+    values:
+      - "arch1_64_64" # [128, 64]
+      # - "arch1_256_256" # [256, 128]
+
+      # - "arch1_64_32"
+      # - "arch1_128_64"
+      # - "arch2_64"
+      # - "arch2_128"
+      # - "arch2_256"
+      
+  optimizer_choice: # 0 for Adam, 1 for AdamW
+    values: [0]
+
+  entropy-weight:
+    values: [5e-6] 
+  discount-factor:
+    values: [0.99]
+  batch-size:
+    values: [64]
+  tau:
+    values: [0.95]
+  max_norm:
+    values: [0.5] # , 1.0, 2.0
+  update-epoch:
+    values: [20] # 10,  
+  # epsilon:
+  #   values: [0.2, 0.3, 0.4]
+  # dropout-rate:
+  #   values: [0.1]

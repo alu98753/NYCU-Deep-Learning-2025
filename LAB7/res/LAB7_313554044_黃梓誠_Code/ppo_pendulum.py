@@ -79,18 +79,18 @@ def init_layer_uniform(layer: nn.Linear, init_w: float = 3e-3) -> nn.Linear:
 
 
 class Actor(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, hidden_dims: List[int] = [128, 64], log_std_min: int = -20, log_std_max: int = 2, dropout_p: float = 0.0): # 調整了預設的 log_std_max
+    def __init__(self, in_dim: int, out_dim: int, hidden_dims: List[int] = [128, 64], log_std_min: int = -20, log_std_max: int = 2, dropout_p: float = 0.0): 
         super(Actor, self).__init__()
-        self.dropout_p = dropout_p # 保存 dropout 率
+        self.dropout_p = dropout_p 
 
         layers = []
         prev_dim = in_dim
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             layers.append(nn.ReLU())
-            if self.dropout_p > 0: # 如果 dropout_p > 0 才加入 Dropout 層
+            if self.dropout_p > 0: 
                 layers.append(nn.Dropout(p=self.dropout_p))
-            init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2]) # 初始化剛加入的線性層
+            init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2]) 
             prev_dim = hidden_dim
         
         self.hidden_layers = nn.Sequential(*layers)
@@ -107,27 +107,26 @@ class Actor(nn.Module):
         mean = self.mean_layer(x)
         
         log_std = self.log_std_layer(x)
-        log_std = torch.clamp(log_std, -2, 1.5) # 鉗位 log_std
-        std = torch.exp(log_std) + 1e-8 # 加入 epsilon
+        log_std = torch.clamp(log_std, -2, 1.5) 
+        std = torch.exp(log_std) + 1e-8 
         
         dist = Normal(mean, std)
-        action = dist.sample() # PPO 通常在收集數據時也從分佈中採樣
-
+        action = dist.sample() 
         return action, dist
 
 class Critic(nn.Module):
     def __init__(self, in_dim: int, hidden_dims: List[int] = [128, 64],dropout_p: float = 0.0):
         super(Critic, self).__init__()
 
-        self.dropout_p = dropout_p # 保存 dropout 率
+        self.dropout_p = dropout_p 
         layers = []
         prev_dim = in_dim
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
             layers.append(nn.ReLU())
-            if self.dropout_p > 0: # 如果 dropout_p > 0 才加入 Dropout 層
+            if self.dropout_p > 0: 
                 layers.append(nn.Dropout(p=self.dropout_p))
-            init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2]) # 初始化剛加入的線性層
+            init_layer_uniform(layers[-3 if self.dropout_p > 0 else -2])
             prev_dim = hidden_dim
             
         self.hidden_layers = nn.Sequential(*layers)
@@ -143,56 +142,14 @@ class Critic(nn.Module):
 def compute_gae(
     next_value: list, rewards: list, masks: list, values: list, gamma: float, tau: float) -> List:
     """Compute gae."""
+    # rewards, masks, values 是 list of tensors
 
-    ############TODO#############
-    # 將 lists of tensors 轉換為 tensors
-    # 假設 rewards, masks, values 列表中的 tensor 都只有一個元素 (PPOAgent.step 中 reward, done 都 reshape 了)
-    # 我們需要確保它們的形狀是 (rollout_len, 1)
-    # 在 PPOAgent.update_model 中，這些已經被 torch.cat 處理過了，
-    # 但 compute_gae 的輸入是 lists。
-    # 這裡假設傳入的 values, rewards, masks 是 rollout 期間的數據列表，
-    # 而 next_value 是 rollout 結束後的 V(s_{T+1})
-
-    # 將 values 列表擴展，包含 next_value 作為最後一個 V(s_{T+1})
-    # 確保所有輸入都是 tensor
-    # values 列表中的元素應該是 self.critic(state) 的輸出，形狀是 (1,1) 或 (1,)
-    # rewards 列表中的元素是 torch.FloatTensor(reward).to(self.device)，形狀是 (1,1)
-    # masks 列表中的元素是 torch.FloatTensor(1 - done).to(self.device)，形狀是 (1,1)
-    
-    # 複製 values 列表以避免修改原始列表，並附加 next_value
-    # 注意：values 列表中的每個元素是 V(s_t)，長度為 rollout_len
-    # rewards 和 masks 的長度也是 rollout_len
-    # next_value 是 V(s_{rollout_len})，即第 rollout_len+1 個狀態的價值
-    
-    # 讓我們重新思考輸入，PPOAgent.update_model 中：
-    # next_value = self.critic(next_state) # next_state 是 rollout 結束後的下一個 state
-    # returns = compute_gae(next_value, self.rewards, self.masks, self.values, ...)
-    # self.rewards, self.masks, self.values 是 Python lists of Tensors.
-
-    gae_values = [torch.zeros_like(values[0]) for _ in range(len(values) + 1)] # 用於存儲 GAE estimates
-    gae_returns = [torch.zeros_like(values[0]) for _ in range(len(values))]      # 用於存儲 target returns R_t
-
+    gae_values = [torch.zeros_like(values[0]) for _ in range(len(values) + 1)] # 存儲 GAE estimates
+    gae_returns = [torch.zeros_like(values[0]) for _ in range(len(values))]      # 存儲 target returns R_t
     gae = torch.zeros_like(values[0]) # 初始化 gae 累加器
-    
-    # 從後往前遍歷 rollout 數據
-    # values[i] is V(s_i)
-    # rewards[i] is r_i
-    # masks[i] is (1-done_i) for s_i -> s_{i+1} transition
-    # next_V_for_delta: for rewards[i] and values[i], the "next value" is values[i+1]
-    # For the last step of rollout (index T-1 if T is rollout_len):
-    # delta_T-1 = rewards[T-1] + gamma * next_value * masks[T-1] - values[T-1]
-    # (next_value here is V(s_T))
-
-    # 為了方便，我們把 next_value 視為 V(s_N) 其中 N = rollout_len
-    # values 列表是 [V(s_0), V(s_1), ..., V(s_{N-1})]
-    # rewards 列表是 [r_0, r_1, ..., r_{N-1}] (r_i 是 s_i -> s_{i+1} 的獎勵)
-    # masks 列表是 [m_0, m_1, ..., m_{N-1}] (m_i 是 s_i -> s_{i+1} 的 (1-done) )
 
     # 從最後一步 (N-1) 往前計算
     for i in reversed(range(len(rewards))): # i from rollout_len-1 down to 0
-        # V(s_{i+1})
-        # 如果 i 是 rollout 的最後一步 (len(rewards)-1)，那麼 V_next 就是傳入的 next_value
-        # 否則，V_next 就是 values[i+1]
         if i == len(rewards) - 1:
             v_next_s = next_value # V(s_{rollout_len})
         else:
@@ -202,21 +159,12 @@ def compute_gae(
         delta = rewards[i] + gamma * v_next_s * masks[i] - values[i]
         
         # GAE: A_i = delta_i + gamma * tau * mask_i * A_{i+1}
-        # 這裡的 gae 變數實際上是 A_{i+1} (來自上一步迭代)
         gae = delta + gamma * tau * masks[i] * gae
-        
-        # Target Return: R_i = A_i + V(s_i)
-        # 我們將 gae (即 A_i) 存起來，或者直接計算 return
-        # 根據 PPOAgent.update_model, returns = compute_gae(...) and advantages = returns - values
-        # 所以 compute_gae 應該返回 R_t = A_t + V(s_t)
         current_return = gae + values[i]
         gae_returns[i] = current_return # 存儲 R_i
     
-    
     return gae_returns
 
-# PPO updates the model several times(update_epoch) using the stacked memory. 
-# By ppo_iter function, it can yield the samples of stacked memory by interacting a environment.
 def ppo_iter(
     update_epoch: int,
     mini_batch_size: int,
@@ -365,7 +313,7 @@ class PPOAgent:
         """Loads the actor and critic models."""
         if os.path.exists(path):
             print(f"Loading models from {path}...")
-            checkpoint = torch.load(path, map_location=self.device,weights_only=False) # map_location 確保能載入到正確裝置
+            checkpoint = torch.load(path, map_location=self.device,weights_only=False) 
             self.actor.load_state_dict(checkpoint['actor_state_dict'])
             self.critic.load_state_dict(checkpoint['critic_state_dict'])
             self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
@@ -468,9 +416,6 @@ class PPOAgent:
             actor_loss_clipped = -torch.min(surr1, surr2).mean()
             
             # Entropy bonus
-            # dist.entropy() gives entropy for each sample in batch, for each action dim.
-            # For Normal, entropy is sum over action_dims. If action_dim=1, shape [mini_batch_size, 1]
-            # We want a scalar entropy bonus for the batch.
             entropy_bonus = dist.entropy().mean() # .mean() to get a scalar average entropy for the batch
 
             actor_loss = actor_loss_clipped - self.entropy_weight * entropy_bonus
@@ -481,8 +426,6 @@ class PPOAgent:
             # critic_loss
             ############TODO#############
             # return_ (target returns R_t) shape: [mini_batch_size, 1]
-            # old_value (V_old(s_t) from data collection) is not used here, we need V_current(s_t)
-            # The critic is updated to predict return_ (which is R_t = GAE_t + V_old(s_t))
             current_values_predicted = self.critic(state) # V_phi(s_t), shape [mini_batch_size, 1]
             
             # Critic loss is typically mean squared error between predicted values and actual returns
@@ -535,17 +478,13 @@ class PPOAgent:
                 state = next_state
                 score += reward
 
-                # if episode ends
                 if done[0][0]:
                     wandb.log({
                         "step": self.total_step,
                         "train_score_vs_env_steps": score 
                     })
-
                     episode_count += 1
-                    # state, _ = self.env.reset(seed=self.seed)
                     state, _ = self.env.reset()  # 不限制 seed
-
                     state = np.expand_dims(state, axis=0)
                     scores.append(score)
                     score = 0
@@ -555,15 +494,15 @@ class PPOAgent:
             critic_losses.append(critic_loss)
             wandb.log({
                 "step": self.total_step,
-                "actor_loss_per_step": actor_loss, # 建議改名以區分
-                "critic_loss_per_step": critic_loss, # 建議改名以區分
+                "actor_loss_per_step": actor_loss, 
+                "critic_loss_per_step": critic_loss, 
                 "entropy_bonus": entropy_bonus,
             }) 
             
             avg_eval_score = self.test_agent_performance(
                 mode = args.mode,
                 num_episodes_to_test=args.num_test_episodes,
-                video_save_path_base="" # Explicitly disable video recording
+                video_save_path_base="" 
             )
             wandb.log({
                 "step": self.total_step,
@@ -683,15 +622,8 @@ class PPOAgent:
                 base_search_seed = 6501
 
                 # For video recording, we might only want to record the *best* window if enabled.
-                # Recording 10000 episodes is too much.
-                # So, video recording during this extensive search will be disabled by default.
-                # If video_save_path_base is provided, it will be used to record the *final single run*
-                # of the best window identified.
-
                 for i in tqdm(range(find_best_seed_episodes), desc="Finding Best Seed Window"):
                     current_seed_for_episode = base_search_seed + i
-                    # No video recording during the search loop itself to save time/space
-                    # We use a new env instance for each episode to ensure clean resets with new seeds
                     test_env_search = gym.make("Pendulum-v1") # No render_mode needed for search logic
                     
                     state, _ = test_env_search.reset(seed=current_seed_for_episode)
@@ -711,8 +643,6 @@ class PPOAgent:
                         current_rolling_avg = np.mean(list(recent_scores_deque))
                         if current_rolling_avg > best_rolling_avg_score:
                             best_rolling_avg_score = current_rolling_avg
-                            # The window started `window_size - 1` episodes ago from the current episode `i`.
-                            # So the seed for the start of this window was `base_search_seed + i - (window_size - 1)`
                             best_seed_for_window_start = base_search_seed + i - (window_size - 1)
                             # print(f"\nNew best {window_size}-episode rolling average: {best_rolling_avg_score:.2f} starting with seed {best_seed_for_window_start} (at episode {i+1})")
 
@@ -842,7 +772,7 @@ if __name__ == "__main__":
             print(f"Error: Model path '{args.model_path}' not provided or does not exist.")
             exit(1)
         try:
-            # 嘗試從模型檔案名解析出 run_identifier 和 episode 並存成: videos/task1_a2c_r9cw4ix3_ep922
+            # 從模型檔案名解析出 run_identifier 和 episode 並存成: videos/task1_a2c_r9cw4ix3_ep922
             path_parts = args.model_path.split(os.sep)
             run_folder_name = path_parts[-2] 
             model_file_basename = os.path.splitext(path_parts[-1])[0] 
@@ -851,8 +781,7 @@ if __name__ == "__main__":
             match_ep = re.search(r'_ep(\d+)$', model_file_basename)
             ep_identifier = f"_ep{match_ep.group(1)}" if match_ep else "_unknown_ep"
             
-            # 影片儲存的特定路徑
-            # args.video_save_dir 是基礎目錄，例如 "videos_lab7_task1"
+            # 影片儲存的特定路徑 , args.video_save_dir 是基礎目錄，例如 "videos_lab7_task1"
             video_specific_folder = os.path.join(args.video_save_dir, run_folder_name + ep_identifier)
         except Exception as e:
             print(f"Could not parse model path for video folder naming, using default: {e}")
@@ -860,22 +789,21 @@ if __name__ == "__main__":
         
         print(f"Test videos will be saved in subfolders of: {video_specific_folder}")
 
-        # 禁用 wandb 上傳
         if wandb.run is None: 
             wandb.init(project=args.wandb_project, config=args, mode="disabled")
 
         agent = PPOAgent(env, args) 
         agent.load_model(args.model_path) 
         avg_test_score = agent.test_agent_performance(
-            mode=args.mode, # 會是 "test"
-            num_episodes_to_test=args.num_test_episodes, # 這個參數在 test mode 下實際不會被舊邏輯使用
+            mode=args.mode, 
+            num_episodes_to_test=args.num_test_episodes, 
             video_save_path_base=video_specific_folder,
-            find_best_seed_episodes=args.num_extensive_test_episodes # 新增的
+            find_best_seed_episodes=args.num_extensive_test_episodes 
         )
         
         print(f"\nFINAL PPO Average score over {args.num_test_episodes} test episodes: {avg_test_score:.2f}")
         
         if wandb.run and wandb.run.mode != "disabled":
             wandb.log({"final_ppo_average_test_score": avg_test_score})
-        if wandb.run: # 確保總是 finish
+        if wandb.run: 
             wandb.finish()
