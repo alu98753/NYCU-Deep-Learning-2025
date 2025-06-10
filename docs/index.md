@@ -1,4 +1,3 @@
-# NYCU-Deep-Learning-2025
 
 LAB1
 ---
@@ -44,10 +43,28 @@ Lab4 Conditional VAE for Video Prediction
 LAB5 DQN
 ---
 
-LAB6 DDPM
+LAB6 Generative Models – conditional DDPM
 ---
 ### Overview
+本實驗旨在實作一個conditional Denoising Diffusion Probabilistic Model
+（Conditional DDPM），能根據多標籤條件（Multi-label conditions）生成對應
+的合成影像。模型輸入為一組物件條件（例如："red sphere", "cyan cube"），根
+據該條件能產生包含這些物件的圖像，並透過預訓練的ResNet18-based 
+Evaluator 分類器進行準確率評估。
+
 ### Demo
+
+#### 1. 展示不同Epoch下的訓練進度
+
+|Epoch| Epoch 1 | Epoch 200 | Final(Ep362) |
+|---|---|---|---|
+|Acc |0.1022 |0.8363 |0.98611 |
+|Description| 正開始從gaussian 學習 denoise| 完整重建物體但是相對位置仍在學習|幾乎準確地重建物體以及位置 完成實作|
+|Gen Img|<img src="https://github.com/user-attachments/assets/66ec972b-a331-4202-af5b-9191c0633884" width="350px"/> |<img src="https://github.com/user-attachments/assets/46778cd5-9a92-4ba9-a789-3d4163f28f0e" width="350px"/> |<img src="https://github.com/user-attachments/assets/a9690ed2-d54b-4029-8f84-8ba579cd21c4" width="350px"/> |
+
+#### 2. Denoising process
+
+![Image](https://github.com/user-attachments/assets/20f4e1da-6f51-4289-a00e-a8614c058471)
 
 LAB7 Policy-Based Reinforcement Learning
 ---
