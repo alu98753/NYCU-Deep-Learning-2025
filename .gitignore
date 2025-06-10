@@ -51,3 +51,15 @@ DL_Lab3/Lab3_code/imga/
 
 *.mp4
 wandb*
+
+
+# Demo
+
+!/Demo/
+!/Demo/*/*.mp4
+!/Demo/*/*.txt
+!/Demo/*/*.json
+!/Demo/*/*.png
+!/Demo/*/*.jpg
+!/Demo/*/*.gif
+!/Demo/*/*.wav

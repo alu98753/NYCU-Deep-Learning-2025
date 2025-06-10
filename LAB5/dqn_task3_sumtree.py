@@ -105,10 +105,6 @@ class AtariPreprocessor:
         return np.stack(self.frames, axis=0)
 
 
-### Sum Tree
-import numpy
-
-
 # SumTree
 # a binary tree data structure where the parent’s value is the sum of its children
 class SumTree:
