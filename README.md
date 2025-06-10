@@ -43,4 +43,63 @@ Lab4 Conditional VAE for Video Prediction
 
 LAB5 DQN
 ---
-===
+
+LAB6 DDPM
+---
+### Overview
+### Demo
+
+LAB7 Policy-Based Reinforcement Learning
+---
+
+### Overview
+
+在這次的  Lab 7  實驗中實作兩種主流的基於策略的強化學習演算法：
+Advantage Actor-Critic (A2C)  和  Proximal Policy Optimization (PPO)。目的是在
+瞭解這些演算法的核心機制，並在  OpenAI Gym  的經典控制任務  Pendulum-v1 
+以及更具挑戰性的  MuJoCo Walker2d-v4  上評估性能。 
+
+合作歡迎 對該研究有興趣，歡迎隨時連絡我，在LAb7 Report中，我將首先詳細描述  A2C  和  PPO (包含  GAE  和  Clipped 
+Objective)  的實作，包括Network 架構、數學公式以及程式碼。接著，我會展
+示並分析在三個主要任務訓練結果，特別是Training Curve、Sample Efficiency
+和Training Stability。其中，我會重點比較  A2C  和  PPO  在  Pendulum  環境上
+的表現差異。對於  Walker2d  任務，我還會探討  PPO  的關鍵超參數，以及使
+用不同PPO 優化trick 對學習性能的影響。 
+通過本次實驗，我驗證了  PPO  相較於  A2C  在Training Stability 和Sample 
+Efficiency 上的優勢，並成功將  PPO  演算法應用於複雜的連續控制任務。
+
+### Demo:專案影片展示
+
+以下是各個演算法在不同環境下的示範影片：
+
+#### A2C Pendulum-v1
+ 
+https://github.com/user-attachments/assets/4e289f14-b239-4ea9-9d59-1311e98fc642
+
+#### PPO Pendulum-v1 : 可以看到PPO 比A2C 有更穩健的控制能力
+
+https://github.com/user-attachments/assets/b26e4064-7757-4394-a84b-ca2f23ba3150
+
+#### PPO MuJoCo Walker2d-v4 : PPO 在 Walker2d 中搭配多個優化Trick(In Report) 可以穩健控制機器人快速行走
+
+https://github.com/user-attachments/assets/ef00fbf5-1242-4997-bceb-fdac29779944
+
+---
+## 合作與機會
+
+歡迎任何形式的合作與交流！我目前正尋求**強化學習（Reinforcement Learning）**領域的**實習與工作機會**。
+
+如果您對此研究專案或相關領域有興趣，或想進一步探討合作可能性，包括：
+
+* **實習與工作機會：** 特別是機器學習、深度學習、強化學習等相關職位。
+* **學術合作：** 共同研究、論文發表、資料共享等。
+* **技術交流：** 經驗分享、問題討論、新技術應用。
+
+請隨時透過以下方式與我聯繫：
+
+* **電子郵件：** [clu98753.cs13@nycu.edu.tw](clu98753.cs13@nycu.edu.tw)
+* **LinkedIn：** [linkedin.com/in/梓誠-黃-75654b352](linkedin.com/in/梓誠-黃-75654b352)
+* **GitHub Issues：** 也歡迎直接在此專案中開啟 [Issue](https://github.com/alu98753/NYCU-Deep-Learning-2025/issues/new) 進行討論。
+
+我們期待與您交流！
+---
